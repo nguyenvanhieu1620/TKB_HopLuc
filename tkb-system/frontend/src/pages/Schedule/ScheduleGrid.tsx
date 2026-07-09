@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import axiosClient from "../../api/axiosClient";
 import { useAuth } from "../../context/AuthContext";
-import { ScheduleItem, Semester, SchoolClass, Subject, Room, Teacher, Session, SchedulingPolicyItem, ApiErrorResponse } from "../../types";
+import { ScheduleItem, Semester, SchoolClass, Subject, Room, Teacher, Session, SchedulingPolicyItem, ApiErrorResponse, CopyWeekResult } from "../../types";
 import { AxiosError } from "axios";
 import { addDays, addMonths, colorForId, getMonthMatrix, MONTH_LABEL, parseDateKey, startOfWeek, toDateKey, WEEKDAY_LABELS } from "../../../utils/calendar";
 import { buildWorkbook, downloadWorkbook } from "../../../utils/excel";
@@ -126,6 +126,11 @@ export default function ScheduleGrid() {
   const [showGroupForm, setShowGroupForm] = useState(false);
 
   const [policies, setPolicies] = useState<Record<string, number>>({});
+
+  const [showCopyWeekForm, setShowCopyWeekForm] = useState(false);
+  const [copyWeekClassId, setCopyWeekClassId] = useState("");
+  const [copyWeekTargetDate, setCopyWeekTargetDate] = useState("");
+  const [copyWeekError, setCopyWeekError] = useState("");
 
   const [viewMode, setViewMode] = useState<ViewMode>("month");
   const [anchorDate, setAnchorDate] = useState<Date>(new Date());
@@ -379,6 +384,46 @@ export default function ScheduleGrid() {
       if (conflict?.roomConflicts?.length) msg += ` — Trùng phòng ${conflict.roomConflicts.length} lần`;
       if (conflict?.teacherConflicts?.length) msg += ` — Trùng giảng viên ${conflict.teacherConflicts.length} lần`;
       setGroupError(msg);
+    }
+  }
+
+  async function handleCopyWeek(e: FormEvent) {
+    e.preventDefault();
+    setCopyWeekError("");
+
+    const classId = copyWeekClassId || filters.classId;
+    if (!classId) {
+      setCopyWeekError("Vui lòng chọn lớp cần sao chép lịch");
+      return;
+    }
+    if (!copyWeekTargetDate) {
+      setCopyWeekError("Vui lòng chọn tuần đích");
+      return;
+    }
+
+    const sourceWeekStart = toDateKey(weekDays[0]);
+    const targetWeekStart = toDateKey(startOfWeek(parseDateKey(copyWeekTargetDate)));
+    if (targetWeekStart === sourceWeekStart) {
+      setCopyWeekError("Tuần đích phải khác tuần đang xem");
+      return;
+    }
+
+    try {
+      const res = await axiosClient.post<CopyWeekResult>("/schedule/copy-week", {
+        classId: Number(classId), sourceWeekStart, targetWeekStart,
+      });
+      const { created, skippedHolidays, skippedConflicts } = res.data;
+      let msg = `Đã sao chép ${created} tiết`;
+      if (skippedHolidays > 0) msg += `, bỏ qua ${skippedHolidays} tiết do trùng nghỉ lễ`;
+      if (skippedConflicts.length > 0) {
+        msg += `, bỏ qua ${skippedConflicts.length} tiết do xung đột:\n- ${skippedConflicts.join("\n- ")}`;
+      }
+      alert(msg);
+      setShowCopyWeekForm(false);
+      loadSchedule();
+    } catch (err) {
+      const axiosErr = err as AxiosError<ApiErrorResponse>;
+      setCopyWeekError(axiosErr.response?.data?.message || "Có lỗi xảy ra");
     }
   }
 
@@ -679,7 +724,45 @@ export default function ScheduleGrid() {
           <button type="button" className={viewMode === "month" ? "active" : ""} onClick={() => setViewMode("month")}>Theo tháng</button>
           <button type="button" className={viewMode === "week" ? "active" : ""} onClick={() => setViewMode("week")}>Theo tuần</button>
         </div>
+        {isAdmin && viewMode === "week" && (
+          <button
+            type="button"
+            onClick={() => {
+              setShowCopyWeekForm((v) => !v);
+              setCopyWeekClassId(filters.classId);
+              setCopyWeekTargetDate(toDateKey(addDays(weekDays[0], 7)));
+              setCopyWeekError("");
+            }}
+          >
+            {showCopyWeekForm ? "Đóng sao chép lịch" : "📋 Sao chép lịch tuần này"}
+          </button>
+        )}
       </div>
+
+      {isAdmin && viewMode === "week" && showCopyWeekForm && (
+        <form className="schedule-form" onSubmit={handleCopyWeek}>
+          <h3>📋 Sao chép lịch tuần {toDateKey(weekDays[0])} → {toDateKey(weekDays[6])} sang tuần khác</h3>
+          <div className="form-grid">
+            {!filters.classId && (
+              <select value={copyWeekClassId} onChange={(e) => setCopyWeekClassId(e.target.value)} required>
+                <option value="">Chọn lớp cần sao chép</option>
+                {classes.map((c) => <option key={c.ClassId} value={c.ClassId}>{c.ClassName}</option>)}
+              </select>
+            )}
+            <div>
+              <input type="date" value={copyWeekTargetDate}
+                onChange={(e) => setCopyWeekTargetDate(e.target.value)} required />
+              {copyWeekTargetDate && (
+                <div className="hint mt-1">
+                  Sẽ sao chép sang tuần: {toDateKey(startOfWeek(parseDateKey(copyWeekTargetDate)))} → {toDateKey(addDays(startOfWeek(parseDateKey(copyWeekTargetDate)), 6))}
+                </div>
+              )}
+            </div>
+          </div>
+          <button type="submit">Sao chép lịch</button>
+          {copyWeekError && <div className="error-text">{copyWeekError}</div>}
+        </form>
+      )}
 
       {viewMode === "month" ? (
         <div className="calendar-month">

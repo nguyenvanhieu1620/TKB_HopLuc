@@ -208,6 +208,33 @@ export interface SchedulingPolicyItem {
   Description: string | null;
 }
 
+export interface CopyWeekResult {
+  created: number;
+  skippedHolidays: number;
+  skippedConflicts: string[];
+  message?: string;
+}
+
+export interface Account {
+  UserId: number;
+  Username: string;
+  Role: UserRole;
+  TeacherId: number | null;
+  TeacherName: string | null;
+  IsActive: boolean;
+  LastLoginAt: string | null;
+  CreatedAt: string;
+}
+
+export interface TeachingHoursReportRow {
+  teacherId: number;
+  fullName: string;
+  totalHours: number;
+  maxHours: number;
+  percentUsed: number;
+  isOverLimit: boolean;
+}
+
 export interface ApiErrorResponse {
   message: string;
   conflict?: {

@@ -289,7 +289,9 @@ INSERT INTO SchedulingPolicy (PolicyKey, PolicyValue, Description) VALUES
 (N'TotalTermsCQ',              N'6',  N'Tổng số kỳ học cả chương trình hệ Chính quy'),
 (N'TotalTermsLT',              N'4',  N'Tổng số kỳ học cả chương trình hệ Liên thông'),
 (N'MinProctorsPerExam',        N'2',  N'Số giám thị tối thiểu cho mỗi phòng thi'),
-(N'NotifyLeadDays',            N'5',  N'Số ngày báo trước khi ban hành TKB tuần mới');
+(N'NotifyLeadDays',            N'5',  N'Số ngày báo trước khi ban hành TKB tuần mới'),
+(N'MaxTeachingHoursPerYearManager', N'300', N'Định mức giờ dạy/năm cho GV kiêm quản lý (Trưởng/Phó khoa)'),
+(N'MaxTeachingHoursPerYearStandard',N'450', N'Định mức giờ dạy/năm cho GV thường');
 GO
 
 /* ============================================================

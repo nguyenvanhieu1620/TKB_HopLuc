@@ -68,6 +68,12 @@
   .hint {
     @apply text-[13px] text-gray-500;
   }
+  .data-table tbody tr.row-danger {
+    @apply bg-red-50 text-danger font-medium hover:bg-red-100;
+  }
+  .data-table tbody tr.row-warning {
+    @apply bg-amber-50 text-amber-700 hover:bg-amber-100;
+  }
 
   /* ===== Calendar view (Thời khóa biểu dạng lịch) ===== */
   .calendar-toolbar { @apply flex justify-between items-center mb-3 flex-wrap gap-2.5; }

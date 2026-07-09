@@ -67,15 +67,15 @@ export async function checkRoomCapacity({ roomId, totalStudents }: CapacityCheck
   return { violated: false };
 }
 
-type SessionCategory = "LyThuyet" | "ThucHanh";
+export type SessionCategory = "LyThuyet" | "ThucHanh";
 
-function classifyRoomCategory(roomType: string): SessionCategory | null {
+export function classifyRoomCategory(roomType: string): SessionCategory | null {
   if (roomType === "LyThuyet") return "LyThuyet";
   if (roomType === "ThucHanh" || roomType === "LamSang") return "ThucHanh";
   return null;
 }
 
-function diffMinutes(startTime: string, endTime: string): number {
+export function diffMinutes(startTime: string, endTime: string): number {
   const [sh, sm] = startTime.split(":").map(Number);
   const [eh, em] = endTime.split(":").map(Number);
   return eh * 60 + em - (sh * 60 + sm);

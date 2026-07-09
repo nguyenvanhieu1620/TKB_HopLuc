@@ -46,6 +46,12 @@ export default function Layout() {
               <NavLink to="/danh-muc/ca-hoc" className={navLinkClass}>Ca học</NavLink>
               <NavLink to="/danh-muc/lich-nghi" className={navLinkClass}>Lịch nghỉ</NavLink>
               <NavLink to="/danh-muc/chuc-vu" className={navLinkClass}>Chức vụ</NavLink>
+              <NavLink to="/danh-muc/tai-khoan" className={navLinkClass}>Quản lý tài khoản</NavLink>
+
+              <div className="mt-4 mb-1 pt-3 border-t border-white/10 text-[11px] uppercase tracking-wide text-white/45 px-3.5">
+                Báo cáo
+              </div>
+              <NavLink to="/bao-cao/gio-day" className={navLinkClass}>Báo cáo giờ dạy</NavLink>
             </>
           )}
         </nav>

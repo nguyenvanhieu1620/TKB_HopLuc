@@ -17,6 +17,8 @@ import Faculties from "./pages/DanhMuc/Faculties";
 import CurriculumItems from "./pages/DanhMuc/CurriculumItems";
 import Holidays from "./pages/DanhMuc/Holidays";
 import Positions from "./pages/DanhMuc/Positions";
+import Accounts from "./pages/DanhMuc/Accounts";
+import TeachingHoursReport from "./pages/Report/TeachingHoursReport";
 
 export default function App() {
   return (
@@ -40,6 +42,9 @@ export default function App() {
         <Route path="danh-muc/khung-chuong-trinh" element={<PrivateRoute adminOnly><CurriculumItems /></PrivateRoute>} />
         <Route path="danh-muc/lich-nghi" element={<PrivateRoute adminOnly><Holidays /></PrivateRoute>} />
         <Route path="danh-muc/chuc-vu" element={<PrivateRoute adminOnly><Positions /></PrivateRoute>} />
+        <Route path="danh-muc/tai-khoan" element={<PrivateRoute adminOnly><Accounts /></PrivateRoute>} />
+
+        <Route path="bao-cao/gio-day" element={<PrivateRoute adminOnly><TeachingHoursReport /></PrivateRoute>} />
       </Route>
     </Routes>
   );

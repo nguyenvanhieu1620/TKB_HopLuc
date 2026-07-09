@@ -394,6 +394,152 @@ export async function mergedCreate(req: AuthRequest, res: Response, next: NextFu
   }
 }
 
+interface CopyWeekBody {
+  classId?: number;
+  sourceWeekStart?: string;
+  targetWeekStart?: string;
+}
+
+// YYYY-MM-DD + offset ngày -> YYYY-MM-DD mới, tính theo UTC để tránh lệch múi giờ server
+// (cùng cách làm với getWeekday trong trainingModeCheck.ts).
+function shiftDateStr(dateStr: string, offsetDays: number): string {
+  const [y, m, d] = dateStr.slice(0, 10).split("-").map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  date.setUTCDate(date.getUTCDate() + offsetDays);
+  return date.toISOString().slice(0, 10);
+}
+
+// Sao chép lịch (XLTB-04): copy toàn bộ buổi học của 1 Lớp trong tuần nguồn sang tuần đích,
+// giữ nguyên giờ/phòng/GV/GroupLabel, chỉ dịch ScheduleDate theo đúng offset số ngày giữa 2 tuần.
+// Mỗi buổi vẫn phải qua đủ các kiểm tra như tạo lịch thường (nghỉ lễ / xung đột / sĩ số / hệ đào
+// tạo) — buổi nào vướng thì BỎ QUA (không tạo, ghi lý do) thay vì chặn cả loạt.
+export async function copyWeek(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { classId, sourceWeekStart, targetWeekStart } = req.body as CopyWeekBody;
+    if (!classId || !sourceWeekStart || !targetWeekStart) {
+      res.status(400).json({ message: "Thiếu lớp hoặc tuần nguồn/tuần đích" });
+      return;
+    }
+
+    const offsetDays = Math.round(
+      (new Date(`${targetWeekStart}T00:00:00Z`).getTime() - new Date(`${sourceWeekStart}T00:00:00Z`).getTime())
+        / (24 * 60 * 60 * 1000)
+    );
+    if (offsetDays === 0) {
+      res.status(400).json({ message: "Tuần đích phải khác tuần nguồn" });
+      return;
+    }
+
+    const pool = await getPool();
+    const sourceWeekEnd = shiftDateStr(sourceWeekStart, 6);
+    const sourceRowsResult = await pool
+      .request()
+      .input("classId", sql.Int, classId)
+      .input("weekStart", sql.Date, sourceWeekStart)
+      .input("weekEnd", sql.Date, sourceWeekEnd)
+      .query<{
+        ScheduleId: number; SemesterId: number; SubjectId: number; RoomId: number;
+        ScheduleDate: string; StartTime: string; EndTime: string;
+        Note: string | null; GroupLabel: string | null;
+      }>(`
+        SELECT ScheduleId, SemesterId, SubjectId, RoomId,
+               CONVERT(VARCHAR(10), ScheduleDate, 23) AS ScheduleDate,
+               CONVERT(VARCHAR(5), StartTime, 108) AS StartTime,
+               CONVERT(VARCHAR(5), EndTime, 108) AS EndTime,
+               Note, GroupLabel
+        FROM Schedule
+        WHERE ClassId = @classId AND ScheduleDate BETWEEN @weekStart AND @weekEnd
+        ORDER BY ScheduleDate, StartTime
+      `);
+
+    const sourceRows = sourceRowsResult.recordset;
+    if (sourceRows.length === 0) {
+      res.json({ created: 0, skippedHolidays: 0, skippedConflicts: [], message: "Tuần nguồn không có buổi học nào" });
+      return;
+    }
+
+    const classInfo = await getClassTrainingMode(classId);
+    const classSize = await getClassSize(classId);
+
+    let created = 0;
+    let skippedHolidays = 0;
+    const skippedConflicts: string[] = [];
+
+    for (const row of sourceRows) {
+      const teacherResult = await pool
+        .request()
+        .input("scheduleId", sql.Int, row.ScheduleId)
+        .query<{ TeacherId: number }>(`SELECT TeacherId FROM ScheduleTeachers WHERE ScheduleId = @scheduleId`);
+      const teacherIds = teacherResult.recordset.map((t) => t.TeacherId);
+
+      const newDate = shiftDateStr(row.ScheduleDate, offsetDays);
+
+      const holiday = await findHoliday(newDate, classInfo?.trainingMode);
+      if (holiday) {
+        skippedHolidays++;
+        continue;
+      }
+
+      const conflict = await checkScheduleConflict({
+        roomId: row.RoomId, teacherIds, date: newDate, startTime: row.StartTime, endTime: row.EndTime,
+      });
+      if (conflict.hasConflict) {
+        skippedConflicts.push(`${row.StartTime}-${row.EndTime} ngày ${newDate}: ${conflictMessage(conflict)}`);
+        continue;
+      }
+
+      const capacityCheck = await checkRoomCapacity({ roomId: row.RoomId, totalStudents: classSize });
+      if (capacityCheck.violated) {
+        skippedConflicts.push(`${row.StartTime}-${row.EndTime} ngày ${newDate}: ${capacityCheck.message}`);
+        continue;
+      }
+
+      const trainingCheck = await checkTrainingModeRule({ classId, scheduleDate: newDate, startTime: row.StartTime });
+      if (trainingCheck.violated) {
+        skippedConflicts.push(`${row.StartTime}-${row.EndTime} ngày ${newDate}: ${trainingCheck.message}`);
+        continue;
+      }
+
+      const insertResult = await pool
+        .request()
+        .input("semesterId", sql.Int, row.SemesterId)
+        .input("classId", sql.Int, classId)
+        .input("subjectId", sql.Int, row.SubjectId)
+        .input("roomId", sql.Int, row.RoomId)
+        .input("scheduleDate", sql.Date, newDate)
+        .input("startTime", sql.VarChar, row.StartTime)
+        .input("endTime", sql.VarChar, row.EndTime)
+        .input("note", sql.NVarChar, row.Note)
+        .input("groupLabel", sql.NVarChar, row.GroupLabel)
+        .input("createdBy", sql.Int, req.user!.userId)
+        .query<{ ScheduleId: number }>(`
+          INSERT INTO Schedule (SemesterId, ClassId, SubjectId, RoomId, ScheduleDate, StartTime, EndTime, Note, GroupLabel, CreatedBy)
+          OUTPUT INSERTED.ScheduleId
+          VALUES (@semesterId, @classId, @subjectId, @roomId, @scheduleDate, @startTime, @endTime, @note, @groupLabel, @createdBy)
+        `);
+      const newScheduleId = insertResult.recordset[0].ScheduleId;
+
+      for (const teacherId of teacherIds) {
+        await pool
+          .request()
+          .input("scheduleId", sql.Int, newScheduleId)
+          .input("teacherId", sql.Int, teacherId)
+          .query(`INSERT INTO ScheduleTeachers (ScheduleId, TeacherId) VALUES (@scheduleId, @teacherId)`);
+      }
+      created++;
+    }
+
+    await writeAuditLog({
+      userId: req.user!.userId, action: "Insert", tableName: "Schedule",
+      recordId: null, detail: { classId, sourceWeekStart, targetWeekStart, created, skippedHolidays, skippedConflicts },
+    });
+
+    res.status(201).json({ created, skippedHolidays, skippedConflicts });
+  } catch (err) {
+    next(err);
+  }
+}
+
 interface GroupedScheduleGroup {
   groupLabel?: string;
   roomId?: number;

@@ -17,6 +17,8 @@ import holidayRoutes from "./holidayRoutes";
 import positionRoutes from "./positionRoutes";
 import teacherUnavailabilityRoutes from "./teacherUnavailabilityRoutes";
 import schedulingPolicyRoutes from "./schedulingPolicyRoutes";
+import accountRoutes from "./accountRoutes";
+import reportRoutes from "./reportRoutes";
 
 const router = Router();
 
@@ -38,5 +40,7 @@ router.use("/holidays", holidayRoutes);
 router.use("/positions", positionRoutes);
 router.use("/teacher-unavailability", teacherUnavailabilityRoutes);
 router.use("/scheduling-policy", schedulingPolicyRoutes);
+router.use("/accounts", accountRoutes);
+router.use("/reports", reportRoutes);
 
 export default router;
