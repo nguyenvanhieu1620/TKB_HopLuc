@@ -1,6 +1,6 @@
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
 import axiosClient from "../../api/axiosClient";
-import { Teacher, TeacherDetail, Faculty, Position, Subject, BulkImportResult, ApiErrorResponse } from "../../types";
+import { Teacher, TeacherDetail, Faculty, Position, Subject, TeacherUnavailability, BulkImportResult, ApiErrorResponse } from "../../types";
 import { AxiosError } from "axios";
 import { readWorkbook, sheetToRows, buildWorkbook, downloadWorkbook } from "../../../utils/excel";
 
@@ -75,19 +75,53 @@ export default function Teachers() {
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<BulkImportResult | null>(null);
 
+  const [unavailItems, setUnavailItems] = useState<TeacherUnavailability[]>([]);
+  const [unavailForm, setUnavailForm] = useState({ teacherId: "", dateFrom: "", dateTo: "", reason: "" });
+  const [unavailError, setUnavailError] = useState("");
+
   async function load() {
-    const [teacherRes, facultyRes, positionRes, subjectRes] = await Promise.all([
+    const [teacherRes, facultyRes, positionRes, subjectRes, unavailRes] = await Promise.all([
       axiosClient.get<Teacher[]>("/teachers"),
       axiosClient.get<Faculty[]>("/faculties"),
       axiosClient.get<Position[]>("/positions"),
       axiosClient.get<Subject[]>("/subjects"),
+      axiosClient.get<TeacherUnavailability[]>("/teacher-unavailability"),
     ]);
     setItems(teacherRes.data);
     setFaculties(facultyRes.data);
     setPositions(positionRes.data);
     setSubjects(subjectRes.data);
+    setUnavailItems(unavailRes.data);
   }
   useEffect(() => { load(); }, []);
+
+  async function handleUnavailSubmit(e: FormEvent) {
+    e.preventDefault();
+    setUnavailError("");
+    if (unavailForm.dateTo < unavailForm.dateFrom) {
+      setUnavailError("Ngày kết thúc phải sau ngày bắt đầu");
+      return;
+    }
+    try {
+      await axiosClient.post("/teacher-unavailability", {
+        teacherId: Number(unavailForm.teacherId),
+        dateFrom: unavailForm.dateFrom,
+        dateTo: unavailForm.dateTo,
+        reason: unavailForm.reason || undefined,
+      });
+      setUnavailForm({ teacherId: "", dateFrom: "", dateTo: "", reason: "" });
+      load();
+    } catch (err) {
+      const axiosErr = err as AxiosError<ApiErrorResponse>;
+      setUnavailError(axiosErr.response?.data?.message || "Có lỗi xảy ra");
+    }
+  }
+
+  async function handleUnavailDelete(id: number) {
+    if (!confirm("Xóa khai báo báo bận này?")) return;
+    await axiosClient.delete(`/teacher-unavailability/${id}`);
+    load();
+  }
 
   function resetForm() {
     setForm(emptyForm);
@@ -331,6 +365,40 @@ export default function Teachers() {
               </td>
             </tr>
           ))}
+        </tbody>
+      </table>
+
+      <h2 className="mt-6">Giảng viên báo bận</h2>
+      <p className="hint">Trong khoảng ngày báo bận, giảng viên sẽ không thể được xếp lịch dạy/coi thi.</p>
+      <form className="inline-form" onSubmit={handleUnavailSubmit}>
+        <select value={unavailForm.teacherId} onChange={(e) => setUnavailForm({ ...unavailForm, teacherId: e.target.value })} required>
+          <option value="">-- Chọn giảng viên --</option>
+          {items.map((t) => <option key={t.TeacherId} value={t.TeacherId}>{t.FullName}</option>)}
+        </select>
+        <input type="date" value={unavailForm.dateFrom}
+          onChange={(e) => setUnavailForm({ ...unavailForm, dateFrom: e.target.value })} required />
+        <input type="date" value={unavailForm.dateTo}
+          onChange={(e) => setUnavailForm({ ...unavailForm, dateTo: e.target.value })} required />
+        <input placeholder="Lý do (vd nghỉ phép, đi công tác...)" value={unavailForm.reason}
+          onChange={(e) => setUnavailForm({ ...unavailForm, reason: e.target.value })} />
+        <button type="submit">Báo bận</button>
+      </form>
+      {unavailError && <div className="error-text">{unavailError}</div>}
+
+      <table className="data-table">
+        <thead><tr><th>#</th><th>Giảng viên</th><th>Từ ngày</th><th>Đến ngày</th><th>Lý do</th><th></th></tr></thead>
+        <tbody>
+          {unavailItems.map((it, idx) => (
+            <tr key={it.UnavailabilityId}>
+              <td>{idx + 1}</td>
+              <td>{it.FullName}</td>
+              <td>{it.DateFrom?.slice(0, 10)}</td>
+              <td>{it.DateTo?.slice(0, 10)}</td>
+              <td>{it.Reason}</td>
+              <td><button onClick={() => handleUnavailDelete(it.UnavailabilityId)}>Xóa</button></td>
+            </tr>
+          ))}
+          {unavailItems.length === 0 && <tr><td colSpan={6}>Chưa có khai báo báo bận nào.</td></tr>}
         </tbody>
       </table>
     </div>

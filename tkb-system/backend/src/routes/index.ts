@@ -15,6 +15,8 @@ import curriculumItemRoutes from "./curriculumItemRoutes";
 import roomUnavailabilityRoutes from "./roomUnavailabilityRoutes";
 import holidayRoutes from "./holidayRoutes";
 import positionRoutes from "./positionRoutes";
+import teacherUnavailabilityRoutes from "./teacherUnavailabilityRoutes";
+import schedulingPolicyRoutes from "./schedulingPolicyRoutes";
 
 const router = Router();
 
@@ -34,5 +36,7 @@ router.use("/curriculum-items", curriculumItemRoutes);
 router.use("/room-unavailability", roomUnavailabilityRoutes);
 router.use("/holidays", holidayRoutes);
 router.use("/positions", positionRoutes);
+router.use("/teacher-unavailability", teacherUnavailabilityRoutes);
+router.use("/scheduling-policy", schedulingPolicyRoutes);
 
 export default router;

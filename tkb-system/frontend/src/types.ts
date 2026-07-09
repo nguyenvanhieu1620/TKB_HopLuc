@@ -119,6 +119,16 @@ export interface RoomUnavailability {
   CreatedAt: string;
 }
 
+export interface TeacherUnavailability {
+  UnavailabilityId: number;
+  TeacherId: number;
+  FullName: string;
+  DateFrom: string;
+  DateTo: string;
+  Reason: string | null;
+  CreatedAt: string;
+}
+
 export interface Semester {
   SemesterId: number;
   SemesterName: string;
@@ -161,6 +171,7 @@ export interface ScheduleItem {
   EndTime: string;
   Note: string | null;
   MergedSessionId: number | null;
+  GroupLabel: string | null;
   Teachers: string | null;
 }
 
@@ -191,11 +202,19 @@ export interface BulkImportResult {
   errors: { index: number; message: string }[];
 }
 
+export interface SchedulingPolicyItem {
+  PolicyKey: string;
+  PolicyValue: string;
+  Description: string | null;
+}
+
 export interface ApiErrorResponse {
   message: string;
   conflict?: {
     roomConflicts?: unknown[];
     teacherConflicts?: unknown[];
     proctorConflicts?: unknown[];
+    roomUnavailable?: unknown[];
+    teacherUnavailable?: unknown[];
   };
 }

@@ -2,12 +2,16 @@ import { Response, NextFunction } from "express";
 import { sql, getPool } from "../config/db";
 import { checkExamConflict, findHoliday } from "../utils/conflictCheck";
 import { getClassTrainingMode } from "../utils/trainingModeCheck";
+import { getPolicyValue } from "../utils/policyConfig";
 import { writeAuditLog } from "../utils/auditLog";
 import { AuthRequest } from "../types";
 
-function conflictMessage(conflict: { roomUnavailable: unknown[] }): string {
+function conflictMessage(conflict: { roomUnavailable: unknown[]; teacherUnavailable: unknown[] }): string {
   if (conflict.roomUnavailable.length > 0) {
     return "Phòng đang tạm khóa/bảo trì trong ngày này, không thể xếp lịch thi";
+  }
+  if (conflict.teacherUnavailable.length > 0) {
+    return "Giám thị đã báo bận trong ngày này, không thể xếp lịch coi thi";
   }
   return "Phát hiện xung đột lịch thi (trùng phòng thi, trùng giám thị, hoặc trùng lịch giảng dạy)";
 }
@@ -103,6 +107,12 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
       return;
     }
 
+    const minProctors = await getPolicyValue("MinProctorsPerExam");
+    if (proctorIds.length < minProctors) {
+      res.status(400).json({ message: `Cần tối thiểu ${minProctors} giám thị cho mỗi phòng thi` });
+      return;
+    }
+
     const conflict = await checkExamConflict({
       roomId, proctorIds, date: examDate, startTime, endTime,
     });
@@ -159,6 +169,12 @@ export async function update(req: AuthRequest, res: Response, next: NextFunction
       classId, subjectId, roomId, proctorIds = [],
       examDate, startTime, endTime, examType, status, note,
     } = req.body as ExamBody;
+
+    const minProctors = await getPolicyValue("MinProctorsPerExam");
+    if (proctorIds.length < minProctors) {
+      res.status(400).json({ message: `Cần tối thiểu ${minProctors} giám thị cho mỗi phòng thi` });
+      return;
+    }
 
     const conflict = await checkExamConflict({
       roomId: roomId as number, proctorIds, date: examDate as string,

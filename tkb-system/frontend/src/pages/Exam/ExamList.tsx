@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import axiosClient from "../../api/axiosClient";
 import { useAuth } from "../../context/AuthContext";
-import { ExamItem, ExamType, Semester, SchoolClass, Subject, Room, Teacher, Session, ApiErrorResponse } from "../../types";
+import { ExamItem, ExamType, Semester, SchoolClass, Subject, Room, Teacher, Session, SchedulingPolicyItem, ApiErrorResponse } from "../../types";
 import { AxiosError } from "axios";
 
 const EXAM_TYPES: { value: ExamType; label: string }[] = [
@@ -37,22 +37,26 @@ export default function ExamList() {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [teachers, setTeachers] = useState<Teacher[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [minProctors, setMinProctors] = useState(1);
   const [filters, setFilters] = useState({ semesterId: "", classId: "" });
   const [form, setForm] = useState<ExamForm>(emptyForm);
   const [error, setError] = useState("");
 
   async function loadLookups() {
-    const [sem, cls, subj, room, tch, ses] = await Promise.all([
+    const [sem, cls, subj, room, tch, ses, policy] = await Promise.all([
       axiosClient.get<Semester[]>("/semesters"),
       axiosClient.get<SchoolClass[]>("/classes"),
       axiosClient.get<Subject[]>("/subjects"),
       axiosClient.get<Room[]>("/rooms"),
       axiosClient.get<Teacher[]>("/teachers"),
       axiosClient.get<Session[]>("/sessions"),
+      axiosClient.get<SchedulingPolicyItem[]>("/scheduling-policy"),
     ]);
     setSemesters(sem.data); setClasses(cls.data); setSubjects(subj.data);
     setRooms(room.data); setTeachers(tch.data);
     setSessions(ses.data.sort((a, b) => a.SortOrder - b.SortOrder));
+    const minProctorsPolicy = policy.data.find((p) => p.PolicyKey === "MinProctorsPerExam");
+    if (minProctorsPolicy) setMinProctors(Number(minProctorsPolicy.PolicyValue));
   }
 
   async function loadExams() {
@@ -73,6 +77,10 @@ export default function ExamList() {
     const session = sessions.find((s) => s.SessionId === Number(form.sessionId));
     if (!session) {
       setError("Vui lòng chọn ca thi");
+      return;
+    }
+    if (form.proctorIds.length < minProctors) {
+      setError(`Cần tối thiểu ${minProctors} giám thị cho mỗi phòng thi`);
       return;
     }
 
@@ -147,10 +155,13 @@ export default function ExamList() {
             <select value={form.examType} onChange={(e) => setForm({ ...form, examType: e.target.value as ExamType })}>
               {EXAM_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
             </select>
-            <select multiple value={form.proctorIds}
-              onChange={(e) => setForm({ ...form, proctorIds: [...e.target.selectedOptions].map((o) => o.value) })}>
-              {teachers.map((t) => <option key={t.TeacherId} value={t.TeacherId}>{t.FullName}</option>)}
-            </select>
+            <div>
+              <select multiple value={form.proctorIds}
+                onChange={(e) => setForm({ ...form, proctorIds: [...e.target.selectedOptions].map((o) => o.value) })}>
+                {teachers.map((t) => <option key={t.TeacherId} value={t.TeacherId}>{t.FullName}</option>)}
+              </select>
+              <div className="hint mt-1">Cần chọn tối thiểu {minProctors} giám thị</div>
+            </div>
             <input type="date" value={form.examDate}
               onChange={(e) => setForm({ ...form, examDate: e.target.value })} required />
             <select value={form.sessionId} onChange={(e) => setForm({ ...form, sessionId: e.target.value })} required>

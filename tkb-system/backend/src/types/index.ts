@@ -23,6 +23,7 @@ export interface ScheduleConflictResult {
   roomConflicts: ConflictRecord[];
   teacherConflicts: ConflictRecord[];
   roomUnavailable: ConflictRecord[];
+  teacherUnavailable: ConflictRecord[];
 }
 
 export interface ExamConflictResult {
@@ -30,6 +31,7 @@ export interface ExamConflictResult {
   roomConflicts: ConflictRecord[];
   proctorConflicts: ConflictRecord[];
   roomUnavailable: ConflictRecord[];
+  teacherUnavailable: ConflictRecord[];
 }
 
 export interface HolidayRecord {

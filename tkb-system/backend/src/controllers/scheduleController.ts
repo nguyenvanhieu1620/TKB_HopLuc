@@ -2,12 +2,16 @@ import { Response, NextFunction } from "express";
 import { sql, getPool } from "../config/db";
 import { checkScheduleConflict, findHoliday } from "../utils/conflictCheck";
 import { checkTrainingModeRule, getClassTrainingMode } from "../utils/trainingModeCheck";
+import { checkRoomCapacity, checkSessionLength, checkDailyHoursLimit, getClassSize } from "../utils/policyRules";
 import { writeAuditLog } from "../utils/auditLog";
 import { AuthRequest } from "../types";
 
-function conflictMessage(conflict: { roomUnavailable: unknown[] }): string {
+function conflictMessage(conflict: { roomUnavailable: unknown[]; teacherUnavailable: unknown[] }): string {
   if (conflict.roomUnavailable.length > 0) {
     return "Phòng đang tạm khóa/bảo trì trong ngày này, không thể xếp lịch";
+  }
+  if (conflict.teacherUnavailable.length > 0) {
+    return "Giảng viên đã báo bận trong ngày này, không thể xếp lịch dạy";
   }
   return "Phát hiện xung đột lịch học (trùng phòng hoặc trùng giảng viên)";
 }
@@ -47,7 +51,7 @@ export async function list(req: AuthRequest, res: Response, next: NextFunction):
              s.RoomId, r.RoomName, s.ScheduleDate,
              CONVERT(VARCHAR(5), s.StartTime, 108) AS StartTime,
              CONVERT(VARCHAR(5), s.EndTime, 108) AS EndTime,
-             s.Note, s.MergedSessionId,
+             s.Note, s.MergedSessionId, s.GroupLabel,
              (SELECT STRING_AGG(t.FullName, ' / ') FROM ScheduleTeachers st
                 INNER JOIN Teachers t ON t.TeacherId = st.TeacherId
                 WHERE st.ScheduleId = s.ScheduleId) AS Teachers
@@ -81,6 +85,13 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
     });
     if (conflict.hasConflict) {
       res.status(409).json({ message: conflictMessage(conflict), conflict });
+      return;
+    }
+
+    const classSize = await getClassSize(classId);
+    const capacityCheck = await checkRoomCapacity({ roomId, totalStudents: classSize });
+    if (capacityCheck.violated) {
+      res.status(400).json({ message: capacityCheck.message });
       return;
     }
 
@@ -121,10 +132,16 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
     const trainingCheck = await checkTrainingModeRule({
       classId, scheduleDate, startTime, isMakeup,
     });
+    const sessionLengthCheck = await checkSessionLength({ roomId, startTime, endTime });
+    const dailyHoursCheck = await checkDailyHoursLimit({
+      classId, scheduleDate, roomId, startTime, endTime, excludeScheduleId: scheduleId,
+    });
 
     const warnings: string[] = [];
     if (holiday) warnings.push(`Ngày ${scheduleDate} rơi vào ngày nghỉ lễ: ${holiday.Description}`);
     if (trainingCheck.violated) warnings.push(trainingCheck.message!);
+    if (sessionLengthCheck.violated) warnings.push(sessionLengthCheck.message!);
+    if (dailyHoursCheck.violated) warnings.push(dailyHoursCheck.message!);
 
     res.status(201).json({
       scheduleId,
@@ -149,6 +166,13 @@ export async function update(req: AuthRequest, res: Response, next: NextFunction
     });
     if (conflict.hasConflict) {
       res.status(409).json({ message: conflictMessage(conflict), conflict });
+      return;
+    }
+
+    const classSize = await getClassSize(classId as number);
+    const capacityCheck = await checkRoomCapacity({ roomId: roomId as number, totalStudents: classSize });
+    if (capacityCheck.violated) {
+      res.status(400).json({ message: capacityCheck.message });
       return;
     }
 
@@ -190,10 +214,19 @@ export async function update(req: AuthRequest, res: Response, next: NextFunction
       classId: classId as number, scheduleDate: scheduleDate as string, startTime: startTime as string,
       isMakeup, excludeScheduleId: Number(id),
     });
+    const sessionLengthCheck = await checkSessionLength({
+      roomId: roomId as number, startTime: startTime as string, endTime: endTime as string,
+    });
+    const dailyHoursCheck = await checkDailyHoursLimit({
+      classId: classId as number, scheduleDate: scheduleDate as string, roomId: roomId as number,
+      startTime: startTime as string, endTime: endTime as string, excludeScheduleId: Number(id),
+    });
 
     const warnings: string[] = [];
     if (holiday) warnings.push(`Ngày ${scheduleDate} rơi vào ngày nghỉ lễ: ${holiday.Description}`);
     if (trainingCheck.violated) warnings.push(trainingCheck.message!);
+    if (sessionLengthCheck.violated) warnings.push(sessionLengthCheck.message!);
+    if (dailyHoursCheck.violated) warnings.push(dailyHoursCheck.message!);
 
     res.json({
       message: "Đã cập nhật lịch học",
@@ -259,6 +292,15 @@ export async function mergedCreate(req: AuthRequest, res: Response, next: NextFu
       return;
     }
 
+    // Ghép lớp dùng chung 1 phòng nên sĩ số so với giới hạn phải tính TỔNG các lớp tham gia.
+    const classSizes = await Promise.all(classIds.map((id) => getClassSize(id)));
+    const totalStudents = classSizes.reduce((sum, size) => sum + size, 0);
+    const capacityCheck = await checkRoomCapacity({ roomId, totalStudents });
+    if (capacityCheck.violated) {
+      res.status(400).json({ message: capacityCheck.message });
+      return;
+    }
+
     const pool = await getPool();
 
     const mergedResult = await pool
@@ -295,6 +337,11 @@ export async function mergedCreate(req: AuthRequest, res: Response, next: NextFu
       });
       if (trainingCheck.violated) trainingWarnings.push(trainingCheck.message!);
 
+      const dailyHoursCheck = await checkDailyHoursLimit({
+        classId, scheduleDate, roomId, startTime, endTime, excludeMergedSessionId: mergedSessionId,
+      });
+      if (dailyHoursCheck.violated) trainingWarnings.push(dailyHoursCheck.message!);
+
       const result = await pool
         .request()
         .input("semesterId", sql.Int, semesterId)
@@ -330,12 +377,140 @@ export async function mergedCreate(req: AuthRequest, res: Response, next: NextFu
     });
 
     const holiday = await findHoliday(scheduleDate, classTrainingInfos[0]?.trainingMode);
+    const sessionLengthCheck = await checkSessionLength({ roomId, startTime, endTime });
+
     const warnings: string[] = [];
     if (holiday) warnings.push(`Ngày ${scheduleDate} rơi vào ngày nghỉ lễ: ${holiday.Description}`);
+    if (sessionLengthCheck.violated) warnings.push(sessionLengthCheck.message!);
     warnings.push(...new Set(trainingWarnings));
 
     res.status(201).json({
       mergedSessionId,
+      scheduleIds,
+      warning: warnings.length ? warnings.join(" | ") : undefined,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+interface GroupedScheduleGroup {
+  groupLabel?: string;
+  roomId?: number;
+  teacherIds?: number[];
+}
+
+interface GroupedScheduleBody {
+  semesterId?: number;
+  classId?: number;
+  subjectId?: number;
+  scheduleDate?: string;
+  startTime?: string;
+  endTime?: string;
+  note?: string;
+  isMakeup?: boolean;
+  groups?: GroupedScheduleGroup[];
+}
+
+// Tách nhóm: 1 lớp học Thực hành/Lâm sàng vượt sĩ số/phòng được chia thành nhiều nhóm học
+// SONG SONG cùng ngày/giờ (khác Phòng và/hoặc Giảng viên), mỗi nhóm là 1 dòng Schedule riêng
+// cùng ClassId/SubjectId/ScheduleDate nhưng khác GroupLabel. Vì các nhóm học cùng lúc ở phòng
+// khác nhau nên không dùng chung MergedSessionId (khác bản chất với ghép lớp — ghép lớp là
+// NHIỀU LỚP gộp vào 1 buổi/1 phòng; tách nhóm là 1 LỚP chia nhỏ ra NHIỀU phòng cùng lúc).
+export async function groupedCreate(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const {
+      semesterId, classId, subjectId, scheduleDate, startTime, endTime, note, isMakeup, groups = [],
+    } = req.body as GroupedScheduleBody;
+
+    if (!semesterId || !classId || !subjectId || !scheduleDate || !startTime || !endTime
+      || !Array.isArray(groups) || groups.length < 2) {
+      res.status(400).json({ message: "Cần chọn ít nhất 2 nhóm và đủ thông tin bắt buộc để tách nhóm" });
+      return;
+    }
+    for (const group of groups) {
+      if (!group.groupLabel?.trim() || !group.roomId) {
+        res.status(400).json({ message: "Mỗi nhóm cần có tên nhóm và phòng học" });
+        return;
+      }
+    }
+    const labels = groups.map((g) => g.groupLabel!.trim().toLowerCase());
+    if (new Set(labels).size !== labels.length) {
+      res.status(400).json({ message: "Tên nhóm bị trùng — mỗi nhóm cần đặt 1 tên riêng" });
+      return;
+    }
+
+    // Cảnh báo (nghỉ lễ / hệ đào tạo / độ dài buổi / tổng giờ trong ngày) tính TRƯỚC khi tạo bất
+    // kỳ dòng Schedule nào của lần tách nhóm này — vì các nhóm học SONG SONG cùng giờ nên với lớp,
+    // đây tính là 1 buổi duy nhất trong ngày, không phải cộng dồn thời lượng của từng nhóm.
+    const classInfo = await getClassTrainingMode(classId);
+    const holiday = await findHoliday(scheduleDate, classInfo?.trainingMode);
+    const trainingCheck = await checkTrainingModeRule({ classId, scheduleDate, startTime, isMakeup });
+    const representativeRoomId = groups[0].roomId!;
+    const sessionLengthCheck = await checkSessionLength({ roomId: representativeRoomId, startTime, endTime });
+    const dailyHoursCheck = await checkDailyHoursLimit({
+      classId, scheduleDate, roomId: representativeRoomId, startTime, endTime,
+    });
+
+    const pool = await getPool();
+    const scheduleIds: number[] = [];
+
+    for (const group of groups) {
+      const conflict = await checkScheduleConflict({
+        roomId: group.roomId!, teacherIds: group.teacherIds || [], date: scheduleDate, startTime, endTime,
+      });
+      if (conflict.hasConflict) {
+        for (const scheduleId of scheduleIds) {
+          await pool.request().input("id", sql.Int, scheduleId).query(`DELETE FROM Schedule WHERE ScheduleId=@id`);
+        }
+        res.status(409).json({
+          message: `${conflictMessage(conflict)} (nhóm "${group.groupLabel}")`,
+          conflict,
+        });
+        return;
+      }
+
+      const result = await pool
+        .request()
+        .input("semesterId", sql.Int, semesterId)
+        .input("classId", sql.Int, classId)
+        .input("subjectId", sql.Int, subjectId)
+        .input("roomId", sql.Int, group.roomId)
+        .input("scheduleDate", sql.Date, scheduleDate)
+        .input("startTime", sql.VarChar, startTime)
+        .input("endTime", sql.VarChar, endTime)
+        .input("note", sql.NVarChar, note || null)
+        .input("groupLabel", sql.NVarChar, group.groupLabel!.trim())
+        .input("createdBy", sql.Int, req.user!.userId)
+        .query<{ ScheduleId: number }>(`
+          INSERT INTO Schedule (SemesterId, ClassId, SubjectId, RoomId, ScheduleDate, StartTime, EndTime, Note, GroupLabel, CreatedBy)
+          OUTPUT INSERTED.ScheduleId
+          VALUES (@semesterId, @classId, @subjectId, @roomId, @scheduleDate, @startTime, @endTime, @note, @groupLabel, @createdBy)
+        `);
+      const scheduleId = result.recordset[0].ScheduleId;
+      scheduleIds.push(scheduleId);
+
+      for (const teacherId of group.teacherIds || []) {
+        await pool
+          .request()
+          .input("scheduleId", sql.Int, scheduleId)
+          .input("teacherId", sql.Int, teacherId)
+          .query(`INSERT INTO ScheduleTeachers (ScheduleId, TeacherId) VALUES (@scheduleId, @teacherId)`);
+      }
+    }
+
+    await writeAuditLog({
+      userId: req.user!.userId, action: "Insert", tableName: "Schedule",
+      recordId: scheduleIds[0], detail: req.body,
+    });
+
+    const warnings: string[] = [];
+    if (holiday) warnings.push(`Ngày ${scheduleDate} rơi vào ngày nghỉ lễ: ${holiday.Description}`);
+    if (trainingCheck.violated) warnings.push(trainingCheck.message!);
+    if (sessionLengthCheck.violated) warnings.push(sessionLengthCheck.message!);
+    if (dailyHoursCheck.violated) warnings.push(dailyHoursCheck.message!);
+
+    res.status(201).json({
       scheduleIds,
       warning: warnings.length ? warnings.join(" | ") : undefined,
     });

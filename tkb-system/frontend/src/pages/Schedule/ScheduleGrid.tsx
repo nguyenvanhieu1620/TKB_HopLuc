@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import axiosClient from "../../api/axiosClient";
 import { useAuth } from "../../context/AuthContext";
-import { ScheduleItem, Semester, SchoolClass, Subject, Room, Teacher, Session, ApiErrorResponse } from "../../types";
+import { ScheduleItem, Semester, SchoolClass, Subject, Room, Teacher, Session, SchedulingPolicyItem, ApiErrorResponse } from "../../types";
 import { AxiosError } from "axios";
 import { addDays, addMonths, colorForId, getMonthMatrix, MONTH_LABEL, parseDateKey, startOfWeek, toDateKey, WEEKDAY_LABELS } from "../../../utils/calendar";
 import { buildWorkbook, downloadWorkbook } from "../../../utils/excel";
@@ -38,6 +38,35 @@ interface MergeForm {
 const emptyMergeForm: MergeForm = {
   semesterId: "", classIds: [], subjectId: "", roomId: "",
   teacherIds: [], scheduleDate: "", sessionId: "", note: "", isMakeup: false,
+};
+
+interface GroupRow {
+  groupLabel: string;
+  roomId: string;
+  teacherIds: string[];
+}
+
+interface GroupForm {
+  semesterId: string;
+  classId: string;
+  subjectId: string;
+  scheduleDate: string;
+  sessionId: string;
+  note: string;
+  isMakeup: boolean;
+  groups: GroupRow[];
+}
+
+const emptyGroupRow: GroupRow = { groupLabel: "", roomId: "", teacherIds: [] };
+const emptyGroupForm: GroupForm = {
+  semesterId: "", classId: "", subjectId: "", scheduleDate: "", sessionId: "", note: "", isMakeup: false,
+  groups: [{ ...emptyGroupRow, groupLabel: "Nhóm 1" }, { ...emptyGroupRow, groupLabel: "Nhóm 2" }],
+};
+
+const CAPACITY_POLICY_BY_ROOM_TYPE: Record<string, string> = {
+  LyThuyet: "MaxStudentsPerTheoryRoom",
+  ThucHanh: "MaxStudentsPerPracticeGroup",
+  LamSang: "MaxStudentsPerClinicalGroup",
 };
 
 type ViewMode = "month" | "week";
@@ -92,6 +121,12 @@ export default function ScheduleGrid() {
   const [mergeError, setMergeError] = useState("");
   const [showMergeForm, setShowMergeForm] = useState(false);
 
+  const [groupForm, setGroupForm] = useState<GroupForm>(emptyGroupForm);
+  const [groupError, setGroupError] = useState("");
+  const [showGroupForm, setShowGroupForm] = useState(false);
+
+  const [policies, setPolicies] = useState<Record<string, number>>({});
+
   const [viewMode, setViewMode] = useState<ViewMode>("month");
   const [anchorDate, setAnchorDate] = useState<Date>(new Date());
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
@@ -106,18 +141,37 @@ export default function ScheduleGrid() {
     [classes, mergeForm.classIds]
   );
 
+  const selectedGroupClass = useMemo(
+    () => classes.find((c) => String(c.ClassId) === groupForm.classId) || null,
+    [classes, groupForm.classId]
+  );
+
+  // Gợi ý tách nhóm: sĩ số lớp vượt giới hạn/ca của loại phòng đang chọn ở form xếp lịch thường.
+  const capacityHint = useMemo(() => {
+    if (!selectedFormClass || !form.roomId) return null;
+    const room = rooms.find((r) => String(r.RoomId) === form.roomId);
+    if (!room) return null;
+    const policyKey = CAPACITY_POLICY_BY_ROOM_TYPE[room.RoomType];
+    if (!policyKey || !(policyKey in policies)) return null;
+    const max = policies[policyKey];
+    if (selectedFormClass.ClassSize <= max) return null;
+    return `Lớp ${selectedFormClass.ClassName} có ${selectedFormClass.ClassSize} người, vượt giới hạn ${max} người/ca của loại phòng này — dùng "Xếp theo nhóm" để tách nhóm học song song.`;
+  }, [selectedFormClass, form.roomId, rooms, policies]);
+
   async function loadLookups() {
-    const [sem, cls, subj, room, tch, ses] = await Promise.all([
+    const [sem, cls, subj, room, tch, ses, policy] = await Promise.all([
       axiosClient.get<Semester[]>("/semesters"),
       axiosClient.get<SchoolClass[]>("/classes"),
       axiosClient.get<Subject[]>("/subjects"),
       axiosClient.get<Room[]>("/rooms"),
       axiosClient.get<Teacher[]>("/teachers"),
       axiosClient.get<Session[]>("/sessions"),
+      axiosClient.get<SchedulingPolicyItem[]>("/scheduling-policy"),
     ]);
     setSemesters(sem.data); setClasses(cls.data); setSubjects(subj.data);
     setRooms(room.data); setTeachers(tch.data);
     setSessions(ses.data.sort((a, b) => a.SortOrder - b.SortOrder));
+    setPolicies(Object.fromEntries(policy.data.map((p) => [p.PolicyKey, Number(p.PolicyValue)])));
   }
 
   async function loadSchedule() {
@@ -264,6 +318,70 @@ export default function ScheduleGrid() {
     }
   }
 
+  function addGroupRow() {
+    setGroupForm({
+      ...groupForm,
+      groups: [...groupForm.groups, { ...emptyGroupRow, groupLabel: `Nhóm ${groupForm.groups.length + 1}` }],
+    });
+  }
+
+  function removeGroupRow(index: number) {
+    if (groupForm.groups.length <= 2) return;
+    setGroupForm({ ...groupForm, groups: groupForm.groups.filter((_, i) => i !== index) });
+  }
+
+  function updateGroupRow(index: number, patch: Partial<GroupRow>) {
+    setGroupForm({
+      ...groupForm,
+      groups: groupForm.groups.map((g, i) => (i === index ? { ...g, ...patch } : g)),
+    });
+  }
+
+  async function handleGroupSubmit(e: FormEvent) {
+    e.preventDefault();
+    setGroupError("");
+
+    const session = sessions.find((s) => s.SessionId === Number(groupForm.sessionId));
+    if (!session) {
+      setGroupError("Vui lòng chọn ca học");
+      return;
+    }
+    if (groupForm.groups.some((g) => !g.groupLabel.trim() || !g.roomId)) {
+      setGroupError("Mỗi nhóm cần có tên nhóm và phòng học");
+      return;
+    }
+
+    const payload = {
+      semesterId: Number(groupForm.semesterId),
+      classId: Number(groupForm.classId),
+      subjectId: Number(groupForm.subjectId),
+      scheduleDate: groupForm.scheduleDate,
+      startTime: session.StartTime,
+      endTime: session.EndTime,
+      note: groupForm.note,
+      isMakeup: groupForm.isMakeup,
+      groups: groupForm.groups.map((g) => ({
+        groupLabel: g.groupLabel.trim(),
+        roomId: Number(g.roomId),
+        teacherIds: g.teacherIds.map(Number),
+      })),
+    };
+    try {
+      const res = await axiosClient.post<{ warning?: string }>("/schedule/grouped", payload);
+      if (res.data.warning) alert(res.data.warning);
+      setGroupForm(emptyGroupForm);
+      setShowGroupForm(false);
+      loadSchedule();
+    } catch (err) {
+      const axiosErr = err as AxiosError<ApiErrorResponse>;
+      const conflict = axiosErr.response?.data?.conflict;
+      let msg = axiosErr.response?.data?.message || "Có lỗi xảy ra";
+      if (conflict?.roomConflicts?.length) msg += ` — Trùng phòng ${conflict.roomConflicts.length} lần`;
+      if (conflict?.teacherConflicts?.length) msg += ` — Trùng giảng viên ${conflict.teacherConflicts.length} lần`;
+      setGroupError(msg);
+    }
+  }
+
   async function handleDelete(id: number) {
     if (!confirm("Xóa buổi học này?")) return;
     await axiosClient.delete(`/schedule/${id}`);
@@ -353,11 +471,14 @@ export default function ScheduleGrid() {
         <button type="button" onClick={handleExportExcel}>Xuất Excel</button>
         {isAdmin && (
           <>
-            <button type="button" onClick={() => { setShowForm((v) => !v); setShowMergeForm(false); setError(""); }}>
+            <button type="button" onClick={() => { setShowForm((v) => !v); setShowMergeForm(false); setShowGroupForm(false); setError(""); }}>
               {showForm ? "Đóng form" : "+ Xếp buổi học mới"}
             </button>
-            <button type="button" onClick={() => { setShowMergeForm((v) => !v); setShowForm(false); setMergeError(""); }}>
+            <button type="button" onClick={() => { setShowMergeForm((v) => !v); setShowForm(false); setShowGroupForm(false); setMergeError(""); }}>
               {showMergeForm ? "Đóng ghép lớp" : "🔗 Ghép lớp"}
+            </button>
+            <button type="button" onClick={() => { setShowGroupForm((v) => !v); setShowForm(false); setShowMergeForm(false); setGroupError(""); }}>
+              {showGroupForm ? "Đóng tách nhóm" : "🧩 Xếp theo nhóm"}
             </button>
           </>
         )}
@@ -386,10 +507,13 @@ export default function ScheduleGrid() {
               <option value="">Môn học</option>
               {subjects.map((s) => <option key={s.SubjectId} value={s.SubjectId}>{s.SubjectName}</option>)}
             </select>
-            <select value={form.roomId} onChange={(e) => setForm({ ...form, roomId: e.target.value })} required>
-              <option value="">Phòng</option>
-              {rooms.map((r) => <option key={r.RoomId} value={r.RoomId}>{r.RoomName}</option>)}
-            </select>
+            <div>
+              <select value={form.roomId} onChange={(e) => setForm({ ...form, roomId: e.target.value })} required>
+                <option value="">Phòng</option>
+                {rooms.map((r) => <option key={r.RoomId} value={r.RoomId}>{r.RoomName}</option>)}
+              </select>
+              {capacityHint && <div className="error-text mt-1">{capacityHint}</div>}
+            </div>
             <div>
               <select multiple value={form.teacherIds} className="w-full"
                 onChange={(e) => setForm({ ...form, teacherIds: [...e.target.selectedOptions].map((o) => o.value) })}>
@@ -477,6 +601,71 @@ export default function ScheduleGrid() {
         </form>
       )}
 
+      {isAdmin && showGroupForm && (
+        <form className="schedule-form" onSubmit={handleGroupSubmit}>
+          <h3>🧩 Xếp theo nhóm (1 lớp chia nhiều nhóm học song song)</h3>
+          <div className="form-grid">
+            <select value={groupForm.semesterId} onChange={(e) => setGroupForm({ ...groupForm, semesterId: e.target.value })} required>
+              <option value="">Đợt học</option>
+              {semesters.map((s) => <option key={s.SemesterId} value={s.SemesterId}>{s.SemesterName}</option>)}
+            </select>
+            <div>
+              <select value={groupForm.classId} onChange={(e) => setGroupForm({ ...groupForm, classId: e.target.value })} required>
+                <option value="">Lớp</option>
+                {classes.map((c) => <option key={c.ClassId} value={c.ClassId}>{c.ClassName}</option>)}
+              </select>
+              {selectedGroupClass && (
+                <div className="hint mt-1">Sĩ số lớp: {selectedGroupClass.ClassSize} — chia đều hoặc theo thực tế vào các nhóm bên dưới</div>
+              )}
+            </div>
+            <select value={groupForm.subjectId} onChange={(e) => setGroupForm({ ...groupForm, subjectId: e.target.value })} required>
+              <option value="">Môn học</option>
+              {subjects.map((s) => <option key={s.SubjectId} value={s.SubjectId}>{s.SubjectName}</option>)}
+            </select>
+            <input type="date" value={groupForm.scheduleDate}
+              onChange={(e) => setGroupForm({ ...groupForm, scheduleDate: e.target.value })} required />
+            <select value={groupForm.sessionId} onChange={(e) => setGroupForm({ ...groupForm, sessionId: e.target.value })} required>
+              <option value="">Ca học</option>
+              {sessions.map((s) => (
+                <option key={s.SessionId} value={s.SessionId}>{s.SessionName} ({s.StartTime}–{s.EndTime})</option>
+              ))}
+            </select>
+            <input placeholder="Ghi chú" value={groupForm.note}
+              onChange={(e) => setGroupForm({ ...groupForm, note: e.target.value })} />
+          </div>
+
+          <div className="mt-3">
+            {groupForm.groups.map((g, idx) => (
+              <div key={idx} className="inline-form mb-2">
+                <input placeholder="Tên nhóm (vd Nhóm 1)" value={g.groupLabel}
+                  onChange={(e) => updateGroupRow(idx, { groupLabel: e.target.value })} required />
+                <select value={g.roomId} onChange={(e) => updateGroupRow(idx, { roomId: e.target.value })} required>
+                  <option value="">Phòng</option>
+                  {rooms.map((r) => <option key={r.RoomId} value={r.RoomId}>{r.RoomName}</option>)}
+                </select>
+                <select multiple value={g.teacherIds}
+                  onChange={(e) => updateGroupRow(idx, { teacherIds: [...e.target.selectedOptions].map((o) => o.value) })}>
+                  {teachers.map((t) => <option key={t.TeacherId} value={t.TeacherId}>{t.FullName}</option>)}
+                </select>
+                {groupForm.groups.length > 2 && (
+                  <button type="button" onClick={() => removeGroupRow(idx)}>Xóa nhóm</button>
+                )}
+              </div>
+            ))}
+            <button type="button" onClick={addGroupRow}>+ Thêm nhóm</button>
+            <div className="hint mt-1">Giữ Ctrl (Windows) / Cmd (Mac) để chọn nhiều giảng viên trong 1 nhóm</div>
+          </div>
+
+          <label className="flex items-center gap-2 mt-2">
+            <input type="checkbox" checked={groupForm.isMakeup}
+              onChange={(e) => setGroupForm({ ...groupForm, isMakeup: e.target.checked })} />
+            Đây là lịch học bù (bỏ qua cảnh báo ngày/buổi trái quy định hệ đào tạo)
+          </label>
+          <button type="submit">Xếp theo nhóm</button>
+          {groupError && <div className="error-text">{groupError}</div>}
+        </form>
+      )}
+
       <div className="calendar-toolbar">
         <div className="calendar-nav">
           <button type="button" onClick={goPrev}>‹</button>
@@ -521,10 +710,10 @@ export default function ScheduleGrid() {
                             key={g.key}
                             className="calendar-event-pill"
                             style={{ background: color.bg, color: color.text }}
-                            title={`${ev.SubjectName} - ${classNames} - ${ev.RoomName} - ${ev.Teachers || ""}`}
+                            title={`${ev.SubjectName}${ev.GroupLabel ? ` - ${ev.GroupLabel}` : ""} - ${classNames} - ${ev.RoomName} - ${ev.Teachers || ""}`}
                             onClick={(e) => { e.stopPropagation(); setSelectedDay(key); }}
                           >
-                            {g.isMerged && "🔗 "}{ev.StartTime}–{ev.EndTime} · {ev.RoomName}
+                            {g.isMerged && "🔗 "}{ev.StartTime}–{ev.EndTime} · {ev.RoomName}{ev.GroupLabel ? ` · ${ev.GroupLabel}` : ""}
                           </div>
                         );
                       })}
@@ -595,6 +784,7 @@ export default function ScheduleGrid() {
                                 <div key={g.key} className="calendar-event-card" style={{ background: color.bg, color: color.text }}>
                                   <div className="calendar-event-title">
                                     {g.isMerged && <span title="Buổi ghép lớp">🔗 </span>}{ev.SubjectName}
+                                    {ev.GroupLabel && <span title="Buổi tách nhóm"> · {ev.GroupLabel}</span>}
                                   </div>
                                   <div className="calendar-event-sub">{classNames} · {ev.RoomName}</div>
                                   {ev.Teachers && <div className="calendar-event-sub">{ev.Teachers}</div>}
@@ -662,7 +852,7 @@ export default function ScheduleGrid() {
                     <tr key={g.key}>
                       <td>{ev.StartTime}–{ev.EndTime}</td>
                       <td>{g.isMerged && "🔗 "}{classNames}</td>
-                      <td>{ev.SubjectName}</td>
+                      <td>{ev.SubjectName}{ev.GroupLabel ? ` · ${ev.GroupLabel}` : ""}</td>
                       <td>{ev.RoomName}</td>
                       <td>{ev.Teachers}</td>
                       {isAdmin && (

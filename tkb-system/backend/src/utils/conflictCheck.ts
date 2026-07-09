@@ -24,6 +24,21 @@ async function checkRoomUnavailable(roomId: number, date: string): Promise<Confl
   return result.recordset;
 }
 
+async function checkTeacherUnavailable(teacherIds: number[], date: string): Promise<ConflictRecord[]> {
+  if (teacherIds.length === 0) return [];
+  const pool = await getPool();
+  const request = pool.request();
+  request.input("date", sql.Date, date);
+  const inClause = bindTeacherIds(request, teacherIds);
+  const result = await request.query<ConflictRecord>(`
+    SELECT tu.UnavailabilityId, tu.TeacherId, t.FullName, tu.DateFrom, tu.DateTo, tu.Reason
+    FROM TeacherUnavailability tu
+    INNER JOIN Teachers t ON t.TeacherId = tu.TeacherId
+    WHERE tu.TeacherId IN (${inClause}) AND @date BETWEEN tu.DateFrom AND tu.DateTo
+  `);
+  return result.recordset;
+}
+
 interface ScheduleConflictParams {
   roomId: number;
   teacherIds?: number[];
@@ -122,15 +137,18 @@ export async function checkScheduleConflict({
   }
 
   const roomUnavailable = await checkRoomUnavailable(roomId, date);
+  const teacherUnavailable = await checkTeacherUnavailable(teacherIds, date);
 
   const roomConflicts = [...roomResult.recordset, ...examRoomResult.recordset];
   const teacherConflicts = [...teacherResult.recordset, ...examTeacherResult.recordset];
 
   return {
-    hasConflict: roomConflicts.length > 0 || teacherConflicts.length > 0 || roomUnavailable.length > 0,
+    hasConflict: roomConflicts.length > 0 || teacherConflicts.length > 0
+      || roomUnavailable.length > 0 || teacherUnavailable.length > 0,
     roomConflicts,
     teacherConflicts,
     roomUnavailable,
+    teacherUnavailable,
   };
 }
 
@@ -222,17 +240,20 @@ export async function checkExamConflict({
   }
 
   const roomUnavailable = await checkRoomUnavailable(roomId, date);
+  const teacherUnavailable = await checkTeacherUnavailable(proctorIds, date);
 
   const roomConflicts = [...examRoomResult.recordset, ...schedRoomResult.recordset];
   const proctorConflicts = [...proctorExamResult.recordset, ...proctorSchedResult.recordset];
 
-  const hasConflict = roomConflicts.length > 0 || proctorConflicts.length > 0 || roomUnavailable.length > 0;
+  const hasConflict = roomConflicts.length > 0 || proctorConflicts.length > 0
+    || roomUnavailable.length > 0 || teacherUnavailable.length > 0;
 
   return {
     hasConflict,
     roomConflicts,
     proctorConflicts,
     roomUnavailable,
+    teacherUnavailable,
   };
 }
 
