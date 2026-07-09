@@ -226,6 +226,20 @@ export interface Account {
   CreatedAt: string;
 }
 
+export interface NotificationItem {
+  NotificationId: number;
+  Content: string;
+  RelatedType: "Schedule" | "Exam" | null;
+  RelatedId: number | null;
+  IsRead: boolean;
+  CreatedAt: string;
+}
+
+export interface NotificationListResponse {
+  notifications: NotificationItem[];
+  unreadCount: number;
+}
+
 export interface TeachingHoursReportRow {
   teacherId: number;
   fullName: string;

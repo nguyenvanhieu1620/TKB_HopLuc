@@ -4,7 +4,23 @@ import { checkExamConflict, findHoliday } from "../utils/conflictCheck";
 import { getClassTrainingMode } from "../utils/trainingModeCheck";
 import { getPolicyValue } from "../utils/policyConfig";
 import { writeAuditLog } from "../utils/auditLog";
+import { notifyTeachers } from "../utils/notify";
 import { AuthRequest } from "../types";
+
+async function getClassSubjectNames(classId: number, subjectId: number): Promise<{ className: string; subjectName: string } | null> {
+  const pool = await getPool();
+  const result = await pool
+    .request()
+    .input("classId", sql.Int, classId)
+    .input("subjectId", sql.Int, subjectId)
+    .query<{ ClassName: string; SubjectName: string }>(`
+      SELECT (SELECT ClassName FROM Classes WHERE ClassId = @classId) AS ClassName,
+             (SELECT SubjectName FROM Subjects WHERE SubjectId = @subjectId) AS SubjectName
+    `);
+  const row = result.recordset[0];
+  if (!row || !row.ClassName || !row.SubjectName) return null;
+  return { className: row.ClassName, subjectName: row.SubjectName };
+}
 
 function conflictMessage(conflict: { roomUnavailable: unknown[]; teacherUnavailable: unknown[] }): string {
   if (conflict.roomUnavailable.length > 0) {
@@ -151,6 +167,18 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
 
     await writeAuditLog({ userId: req.user!.userId, action: "Insert", tableName: "Exams", recordId: examId, detail: req.body });
 
+    if (proctorIds.length > 0) {
+      const names = await getClassSubjectNames(classId, subjectId);
+      if (names) {
+        await notifyTeachers(
+          proctorIds,
+          `Lịch coi thi mới: Lớp ${names.className} - ${names.subjectName}, ngày ${examDate} (${startTime}-${endTime})`,
+          "Exam",
+          examId
+        );
+      }
+    }
+
     const classInfo = await getClassTrainingMode(classId);
     const holiday = await findHoliday(examDate, classInfo?.trainingMode);
     res.status(201).json({
@@ -216,6 +244,18 @@ export async function update(req: AuthRequest, res: Response, next: NextFunction
 
     await writeAuditLog({ userId: req.user!.userId, action: "Update", tableName: "Exams", recordId: Number(id), detail: req.body });
 
+    if (proctorIds.length > 0) {
+      const names = await getClassSubjectNames(classId as number, subjectId as number);
+      if (names) {
+        await notifyTeachers(
+          proctorIds,
+          `Lịch coi thi đã thay đổi: Lớp ${names.className} - ${names.subjectName}, ngày ${examDate} (${startTime}-${endTime})`,
+          "Exam",
+          Number(id)
+        );
+      }
+    }
+
     const classInfo = await getClassTrainingMode(classId as number);
     const holiday = await findHoliday(examDate as string, classInfo?.trainingMode);
     res.json({
@@ -231,8 +271,42 @@ export async function remove(req: AuthRequest, res: Response, next: NextFunction
   try {
     const { id } = req.params;
     const pool = await getPool();
+
+    // Lấy thông tin ca thi + giám thị liên quan TRƯỚC khi xóa, vì sau DELETE sẽ không còn truy vấn được.
+    const infoResult = await pool
+      .request()
+      .input("id", sql.Int, id)
+      .query<{
+        ClassName: string; SubjectName: string; ExamDate: string; StartTime: string; EndTime: string;
+      }>(`
+        SELECT c.ClassName, sub.SubjectName,
+               CONVERT(VARCHAR(10), e.ExamDate, 23) AS ExamDate,
+               CONVERT(VARCHAR(5), e.StartTime, 108) AS StartTime,
+               CONVERT(VARCHAR(5), e.EndTime, 108) AS EndTime
+        FROM Exams e
+        INNER JOIN Classes c ON c.ClassId = e.ClassId
+        INNER JOIN Subjects sub ON sub.SubjectId = e.SubjectId
+        WHERE e.ExamId = @id
+      `);
+    const info = infoResult.recordset[0];
+    const proctorResult = await pool
+      .request()
+      .input("id", sql.Int, id)
+      .query<{ TeacherId: number }>(`SELECT TeacherId FROM ExamProctors WHERE ExamId = @id`);
+    const proctorIds = proctorResult.recordset.map((t) => t.TeacherId);
+
     await pool.request().input("id", sql.Int, id).query(`DELETE FROM Exams WHERE ExamId=@id`);
     await writeAuditLog({ userId: req.user!.userId, action: "Delete", tableName: "Exams", recordId: Number(id) });
+
+    if (info && proctorIds.length > 0) {
+      await notifyTeachers(
+        proctorIds,
+        `Lịch coi thi đã bị hủy: Lớp ${info.ClassName} - ${info.SubjectName}, ngày ${info.ExamDate} (${info.StartTime}-${info.EndTime})`,
+        "Exam",
+        Number(id)
+      );
+    }
+
     res.json({ message: "Đã xóa lịch thi" });
   } catch (err) {
     next(err);

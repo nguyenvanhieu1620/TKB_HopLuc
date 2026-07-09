@@ -4,7 +4,23 @@ import { checkScheduleConflict, findHoliday } from "../utils/conflictCheck";
 import { checkTrainingModeRule, getClassTrainingMode } from "../utils/trainingModeCheck";
 import { checkRoomCapacity, checkSessionLength, checkDailyHoursLimit, getClassSize } from "../utils/policyRules";
 import { writeAuditLog } from "../utils/auditLog";
+import { notifyTeachers } from "../utils/notify";
 import { AuthRequest } from "../types";
+
+async function getClassSubjectNames(classId: number, subjectId: number): Promise<{ className: string; subjectName: string } | null> {
+  const pool = await getPool();
+  const result = await pool
+    .request()
+    .input("classId", sql.Int, classId)
+    .input("subjectId", sql.Int, subjectId)
+    .query<{ ClassName: string; SubjectName: string }>(`
+      SELECT (SELECT ClassName FROM Classes WHERE ClassId = @classId) AS ClassName,
+             (SELECT SubjectName FROM Subjects WHERE SubjectId = @subjectId) AS SubjectName
+    `);
+  const row = result.recordset[0];
+  if (!row || !row.ClassName || !row.SubjectName) return null;
+  return { className: row.ClassName, subjectName: row.SubjectName };
+}
 
 function conflictMessage(conflict: { roomUnavailable: unknown[]; teacherUnavailable: unknown[] }): string {
   if (conflict.roomUnavailable.length > 0) {
@@ -127,6 +143,18 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
       recordId: scheduleId, detail: req.body,
     });
 
+    if (teacherIds.length > 0) {
+      const names = await getClassSubjectNames(classId, subjectId);
+      if (names) {
+        await notifyTeachers(
+          teacherIds,
+          `Lịch dạy mới: Lớp ${names.className} - ${names.subjectName}, ngày ${scheduleDate} (${startTime}-${endTime})`,
+          "Schedule",
+          scheduleId
+        );
+      }
+    }
+
     const classInfo = await getClassTrainingMode(classId);
     const holiday = await findHoliday(scheduleDate, classInfo?.trainingMode);
     const trainingCheck = await checkTrainingModeRule({
@@ -208,6 +236,18 @@ export async function update(req: AuthRequest, res: Response, next: NextFunction
       recordId: Number(id), detail: req.body,
     });
 
+    if (teacherIds.length > 0) {
+      const names = await getClassSubjectNames(classId as number, subjectId as number);
+      if (names) {
+        await notifyTeachers(
+          teacherIds,
+          `Lịch dạy đã thay đổi: Lớp ${names.className} - ${names.subjectName}, ngày ${scheduleDate} (${startTime}-${endTime})`,
+          "Schedule",
+          Number(id)
+        );
+      }
+    }
+
     const classInfo = await getClassTrainingMode(classId as number);
     const holiday = await findHoliday(scheduleDate as string, classInfo?.trainingMode);
     const trainingCheck = await checkTrainingModeRule({
@@ -241,8 +281,42 @@ export async function remove(req: AuthRequest, res: Response, next: NextFunction
   try {
     const { id } = req.params;
     const pool = await getPool();
+
+    // Lấy thông tin buổi học + GV liên quan TRƯỚC khi xóa, vì sau DELETE sẽ không còn truy vấn được.
+    const infoResult = await pool
+      .request()
+      .input("id", sql.Int, id)
+      .query<{
+        ClassName: string; SubjectName: string; ScheduleDate: string; StartTime: string; EndTime: string;
+      }>(`
+        SELECT c.ClassName, sub.SubjectName,
+               CONVERT(VARCHAR(10), s.ScheduleDate, 23) AS ScheduleDate,
+               CONVERT(VARCHAR(5), s.StartTime, 108) AS StartTime,
+               CONVERT(VARCHAR(5), s.EndTime, 108) AS EndTime
+        FROM Schedule s
+        INNER JOIN Classes c ON c.ClassId = s.ClassId
+        INNER JOIN Subjects sub ON sub.SubjectId = s.SubjectId
+        WHERE s.ScheduleId = @id
+      `);
+    const info = infoResult.recordset[0];
+    const teacherResult = await pool
+      .request()
+      .input("id", sql.Int, id)
+      .query<{ TeacherId: number }>(`SELECT TeacherId FROM ScheduleTeachers WHERE ScheduleId = @id`);
+    const teacherIds = teacherResult.recordset.map((t) => t.TeacherId);
+
     await pool.request().input("id", sql.Int, id).query(`DELETE FROM Schedule WHERE ScheduleId=@id`);
     await writeAuditLog({ userId: req.user!.userId, action: "Delete", tableName: "Schedule", recordId: Number(id) });
+
+    if (info && teacherIds.length > 0) {
+      await notifyTeachers(
+        teacherIds,
+        `Lịch dạy đã bị hủy: Lớp ${info.ClassName} - ${info.SubjectName}, ngày ${info.ScheduleDate} (${info.StartTime}-${info.EndTime})`,
+        "Schedule",
+        Number(id)
+      );
+    }
+
     res.json({ message: "Đã xóa tiết học" });
   } catch (err) {
     next(err);
@@ -464,6 +538,7 @@ export async function copyWeek(req: AuthRequest, res: Response, next: NextFuncti
     let created = 0;
     let skippedHolidays = 0;
     const skippedConflicts: string[] = [];
+    const notifiedTeacherIds = new Set<number>();
 
     for (const row of sourceRows) {
       const teacherResult = await pool
@@ -527,12 +602,24 @@ export async function copyWeek(req: AuthRequest, res: Response, next: NextFuncti
           .query(`INSERT INTO ScheduleTeachers (ScheduleId, TeacherId) VALUES (@scheduleId, @teacherId)`);
       }
       created++;
+      teacherIds.forEach((t) => notifiedTeacherIds.add(t));
     }
 
     await writeAuditLog({
       userId: req.user!.userId, action: "Insert", tableName: "Schedule",
       recordId: null, detail: { classId, sourceWeekStart, targetWeekStart, created, skippedHolidays, skippedConflicts },
     });
+
+    // Sao chép cả tuần có thể tạo nhiều dòng Schedule cho cùng 1 GV — chỉ gửi 1 thông báo tổng
+    // hợp/GV thay vì gửi riêng từng buổi để tránh spam thông báo.
+    if (created > 0 && notifiedTeacherIds.size > 0) {
+      await notifyTeachers(
+        Array.from(notifiedTeacherIds),
+        `TKB lớp ${classInfo?.className ?? classId} tuần ${targetWeekStart} đã được cập nhật, ${created} tiết mới`,
+        "Schedule",
+        null
+      );
+    }
 
     res.status(201).json({ created, skippedHolidays, skippedConflicts });
   } catch (err) {

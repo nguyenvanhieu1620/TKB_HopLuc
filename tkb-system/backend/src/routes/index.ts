@@ -19,6 +19,7 @@ import teacherUnavailabilityRoutes from "./teacherUnavailabilityRoutes";
 import schedulingPolicyRoutes from "./schedulingPolicyRoutes";
 import accountRoutes from "./accountRoutes";
 import reportRoutes from "./reportRoutes";
+import notificationRoutes from "./notificationRoutes";
 
 const router = Router();
 
@@ -42,5 +43,6 @@ router.use("/teacher-unavailability", teacherUnavailabilityRoutes);
 router.use("/scheduling-policy", schedulingPolicyRoutes);
 router.use("/accounts", accountRoutes);
 router.use("/reports", reportRoutes);
+router.use("/notifications", notificationRoutes);
 
 export default router;
