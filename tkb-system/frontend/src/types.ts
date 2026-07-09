@@ -1,0 +1,201 @@
+export type UserRole = "Admin" | "Teacher";
+
+export interface AuthUser {
+  userId: number;
+  username: string;
+  role: UserRole;
+  teacherId: number | null;
+}
+
+export interface Major {
+  MajorId: number;
+  MajorName: string;
+  TrainingMode: "CQ" | "LT" | null;
+  FacultyId: number | null;
+  FacultyName: string | null;
+  IsActive: boolean;
+}
+
+export interface Cohort {
+  CohortId: number;
+  CohortName: string;
+  StartYear: number;
+  DurationYears: number;
+  IsActive: boolean;
+}
+
+export interface Faculty {
+  FacultyId: number;
+  FacultyName: string;
+  IsActive: boolean;
+}
+
+export interface Position {
+  PositionId: number;
+  PositionName: string;
+  IsActive: boolean;
+}
+
+export interface Teacher {
+  TeacherId: number;
+  FullName: string;
+  FacultyId: number | null;
+  FacultyName: string | null;
+  PositionId: number | null;
+  PositionName: string | null;
+  Phone: string | null;
+  Email: string | null;
+  IsActive: boolean;
+  Subjects: string | null;
+}
+
+export interface TeacherDetail extends Teacher {
+  subjects: { SubjectId: number; SubjectName: string }[];
+}
+
+export interface Subject {
+  SubjectId: number;
+  SubjectCode: string | null;
+  SubjectName: string;
+  FacultyId: number | null;
+  FacultyName: string | null;
+  Credits: number | null;
+  TheoryHours: number;
+  PracticeHours: number;
+  ExamHours: number;
+  IsActive: boolean;
+}
+
+export interface CurriculumItem {
+  CurriculumItemId: number;
+  MajorId: number;
+  MajorName: string;
+  SubjectId: number;
+  SubjectName: string;
+  SubjectCode: string | null;
+  CohortId: number | null;
+  CohortName: string | null;
+  TermNumber: number;
+  Credits: number | null;
+  TotalHours: number | null;
+  TheoryHours: number | null;
+  PracticeHours: number | null;
+  ExamHours: number | null;
+  SortOrder: number;
+  IsActive: boolean;
+}
+
+export interface SchoolClass {
+  ClassId: number;
+  ClassName: string;
+  MajorId: number;
+  MajorName: string;
+  TrainingMode: "CQ" | "LT" | null;
+  CohortId: number;
+  CohortName: string;
+  ClassSize: number;
+  IsActive: boolean;
+}
+
+export type RoomType = "LyThuyet" | "ThucHanh" | "Labo" | "LamSang" | "SanBai";
+
+export interface Room {
+  RoomId: number;
+  RoomName: string;
+  RoomType: RoomType;
+  Capacity: number | null;
+  FacultyId: number | null;
+  FacultyName: string | null;
+  IsActive: boolean;
+}
+
+export interface RoomUnavailability {
+  UnavailabilityId: number;
+  RoomId: number;
+  RoomName: string;
+  DateFrom: string;
+  DateTo: string;
+  Reason: string | null;
+  CreatedAt: string;
+}
+
+export interface Semester {
+  SemesterId: number;
+  SemesterName: string;
+  AcademicYear: string;
+  StartDate: string;
+  EndDate: string;
+  IsActive: boolean;
+}
+
+export type HolidayAppliesTo = "CQ" | "LT" | "ALL";
+
+export interface Holiday {
+  HolidayId: number;
+  DateFrom: string;
+  DateTo: string;
+  Description: string;
+  AppliesTo: HolidayAppliesTo;
+}
+
+export interface Session {
+  SessionId: number;
+  SessionName: string;
+  StartTime: string;
+  EndTime: string;
+  SortOrder: number;
+  IsActive: boolean;
+}
+
+export interface ScheduleItem {
+  ScheduleId: number;
+  SemesterId: number;
+  ClassId: number;
+  ClassName: string;
+  SubjectId: number;
+  SubjectName: string;
+  RoomId: number;
+  RoomName: string;
+  ScheduleDate: string;
+  StartTime: string;
+  EndTime: string;
+  Note: string | null;
+  MergedSessionId: number | null;
+  Teachers: string | null;
+}
+
+export type ExamType = "TuLuan" | "TracNghiem" | "VanDap" | "ThucHanh";
+export type ExamStatus = "ChuaThi" | "DaThi" | "Huy";
+
+export interface ExamItem {
+  ExamId: number;
+  SemesterId: number;
+  ClassId: number;
+  ClassName: string;
+  SubjectId: number;
+  SubjectName: string;
+  RoomId: number;
+  RoomName: string;
+  ExamDate: string;
+  StartTime: string;
+  EndTime: string;
+  ExamType: ExamType;
+  Status: ExamStatus;
+  Note: string | null;
+  Proctors: string | null;
+}
+
+export interface BulkImportResult {
+  successCount: number;
+  errorCount: number;
+  errors: { index: number; message: string }[];
+}
+
+export interface ApiErrorResponse {
+  message: string;
+  conflict?: {
+    roomConflicts?: unknown[];
+    teacherConflicts?: unknown[];
+    proctorConflicts?: unknown[];
+  };
+}
