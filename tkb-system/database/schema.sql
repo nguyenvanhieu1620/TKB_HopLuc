@@ -114,6 +114,7 @@ CREATE TABLE Classes (
     MajorId       INT             NOT NULL,
     CohortId      INT             NOT NULL,
     ClassSize     INT             NOT NULL DEFAULT 0,
+    StartDate     DATE            NULL,   -- ngày khai giảng của lớp (trường tuyển sinh quanh năm, mỗi lớp 1 mốc riêng)
     IsActive      BIT             NOT NULL DEFAULT 1,
     CreatedAt     DATETIME2       NOT NULL DEFAULT SYSDATETIME(),
     CONSTRAINT FK_Classes_Majors  FOREIGN KEY (MajorId)  REFERENCES Majors(MajorId),
@@ -154,15 +155,24 @@ GO
 /* ============================================================
    5. DANH MỤC: HỌC KỲ / ĐỢT HỌC
    ============================================================ */
+-- Mỗi Lớp có bộ Kỳ học RIÊNG (trường tuyển sinh quanh năm, không dùng chung 1 danh mục Học kỳ
+-- cho nhiều lớp như Rooms/Majors) — ClassId/TermNumber NULL-able để tương thích ngược với dữ
+-- liệu Semesters cũ (nếu có) chưa gắn với lớp nào.
 CREATE TABLE Semesters (
     SemesterId    INT IDENTITY(1,1) PRIMARY KEY,
     SemesterName  NVARCHAR(100)   NOT NULL,
     AcademicYear  NVARCHAR(20)    NOT NULL,   -- năm học, vd '2025-2026'
     StartDate     DATE            NOT NULL,
     EndDate       DATE            NOT NULL,
+    ClassId       INT             NULL,
+    TermNumber    INT             NULL,       -- Kỳ thứ mấy của lớp (1, 2, 3...)
     IsActive      BIT             NOT NULL DEFAULT 1,
-    CONSTRAINT CK_Semesters_Date CHECK (EndDate >= StartDate)
+    CONSTRAINT CK_Semesters_Date CHECK (EndDate >= StartDate),
+    CONSTRAINT FK_Semesters_Class FOREIGN KEY (ClassId) REFERENCES Classes(ClassId)
 );
+GO
+
+CREATE INDEX IX_Semesters_Class ON Semesters (ClassId);
 GO
 
 /* ============================================================

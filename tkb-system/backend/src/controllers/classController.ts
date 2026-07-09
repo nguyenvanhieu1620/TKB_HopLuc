@@ -7,6 +7,7 @@ interface ClassBody {
   majorId?: number;
   cohortId?: number;
   classSize?: number;
+  startDate?: string;
   isActive?: boolean;
 }
 
@@ -15,7 +16,7 @@ export async function list(req: AuthRequest, res: Response, next: NextFunction):
     const pool = await getPool();
     const result = await pool.request().query(`
       SELECT c.ClassId, c.ClassName, c.MajorId, m.MajorName, m.TrainingMode,
-             c.CohortId, co.CohortName, c.ClassSize, c.IsActive
+             c.CohortId, co.CohortName, c.ClassSize, c.StartDate, c.IsActive
       FROM Classes c
       INNER JOIN Majors m ON m.MajorId = c.MajorId
       INNER JOIN Cohorts co ON co.CohortId = c.CohortId
@@ -29,7 +30,7 @@ export async function list(req: AuthRequest, res: Response, next: NextFunction):
 
 export async function create(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { className, majorId, cohortId, classSize } = req.body as ClassBody;
+    const { className, majorId, cohortId, classSize, startDate } = req.body as ClassBody;
     if (!className || !majorId || !cohortId) {
       res.status(400).json({ message: "Thiếu tên lớp, ngành hoặc khóa học" });
       return;
@@ -41,10 +42,11 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
       .input("majorId", sql.Int, majorId)
       .input("cohortId", sql.Int, cohortId)
       .input("classSize", sql.Int, classSize || 0)
+      .input("startDate", sql.Date, startDate || null)
       .query<{ ClassId: number }>(`
-        INSERT INTO Classes (ClassName, MajorId, CohortId, ClassSize)
+        INSERT INTO Classes (ClassName, MajorId, CohortId, ClassSize, StartDate)
         OUTPUT INSERTED.ClassId
-        VALUES (@className, @majorId, @cohortId, @classSize)
+        VALUES (@className, @majorId, @cohortId, @classSize, @startDate)
       `);
     res.status(201).json({ classId: result.recordset[0].ClassId });
   } catch (err) {
@@ -55,7 +57,7 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
 export async function update(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   try {
     const { id } = req.params;
-    const { className, majorId, cohortId, classSize, isActive } = req.body as ClassBody;
+    const { className, majorId, cohortId, classSize, startDate, isActive } = req.body as ClassBody;
     const pool = await getPool();
     await pool
       .request()
@@ -64,10 +66,11 @@ export async function update(req: AuthRequest, res: Response, next: NextFunction
       .input("majorId", sql.Int, majorId)
       .input("cohortId", sql.Int, cohortId)
       .input("classSize", sql.Int, classSize || 0)
+      .input("startDate", sql.Date, startDate || null)
       .input("isActive", sql.Bit, isActive ?? true)
       .query(`
         UPDATE Classes SET ClassName=@className, MajorId=@majorId,
-          CohortId=@cohortId, ClassSize=@classSize, IsActive=@isActive
+          CohortId=@cohortId, ClassSize=@classSize, StartDate=@startDate, IsActive=@isActive
         WHERE ClassId = @id
       `);
     res.json({ message: "Đã cập nhật" });

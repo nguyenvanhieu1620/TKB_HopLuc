@@ -94,6 +94,7 @@ export interface SchoolClass {
   CohortId: number;
   CohortName: string;
   ClassSize: number;
+  StartDate: string | null;
   IsActive: boolean;
 }
 

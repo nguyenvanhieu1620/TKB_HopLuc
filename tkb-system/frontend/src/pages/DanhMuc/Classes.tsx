@@ -8,9 +8,10 @@ interface ClassForm {
   majorId: string;
   cohortId: string;
   classSize: string;
+  startDate: string;
 }
 
-const emptyForm: ClassForm = { className: "", majorId: "", cohortId: "", classSize: "" };
+const emptyForm: ClassForm = { className: "", majorId: "", cohortId: "", classSize: "", startDate: "" };
 
 export default function Classes() {
   const [items, setItems] = useState<SchoolClass[]>([]);
@@ -45,6 +46,7 @@ export default function Classes() {
       majorId: Number(form.majorId),
       cohortId: Number(form.cohortId),
       classSize: Number(form.classSize) || 0,
+      startDate: form.startDate || undefined,
     };
     try {
       if (editingId) {
@@ -67,6 +69,7 @@ export default function Classes() {
       majorId: String(item.MajorId),
       cohortId: String(item.CohortId),
       classSize: String(item.ClassSize),
+      startDate: item.StartDate ? item.StartDate.slice(0, 10) : "",
     });
   }
 
@@ -106,13 +109,18 @@ export default function Classes() {
         </select>
         <input type="number" placeholder="Sĩ số" value={form.classSize}
           onChange={(e) => setForm({ ...form, classSize: e.target.value })} />
+        <div>
+          <label className="hint">Ngày khai giảng</label>
+          <input type="date" value={form.startDate}
+            onChange={(e) => setForm({ ...form, startDate: e.target.value })} />
+        </div>
         <button type="submit">{editingId ? "Cập nhật" : "Thêm mới"}</button>
         {editingId && <button type="button" onClick={resetForm}>Hủy</button>}
       </form>
       {error && <div className="error-text">{error}</div>}
 
       <table className="data-table">
-        <thead><tr><th>#</th><th>Tên lớp</th><th>Ngành</th><th>Hệ</th><th>Khóa</th><th>Sĩ số</th><th></th></tr></thead>
+        <thead><tr><th>#</th><th>Tên lớp</th><th>Ngành</th><th>Hệ</th><th>Khóa</th><th>Sĩ số</th><th>Ngày khai giảng</th><th></th></tr></thead>
         <tbody>
           {items.map((it, idx) => (
             <tr key={it.ClassId}>
@@ -122,6 +130,7 @@ export default function Classes() {
               <td>{it.TrainingMode === "CQ" ? "Chính quy" : it.TrainingMode === "LT" ? "Liên thông" : "—"}</td>
               <td>{it.CohortName}</td>
               <td>{it.ClassSize}</td>
+              <td>{it.StartDate ? it.StartDate.slice(0, 10) : "—"}</td>
               <td>
                 <button onClick={() => handleEdit(it)}>Sửa</button>
                 <button onClick={() => handleDelete(it.ClassId)}>Xóa</button>
