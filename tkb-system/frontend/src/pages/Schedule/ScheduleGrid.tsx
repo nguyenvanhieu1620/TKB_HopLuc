@@ -132,8 +132,11 @@ export default function ScheduleGrid() {
 
   const [policies, setPolicies] = useState<Record<string, number>>({});
 
+  const [formSemesters, setFormSemesters] = useState<Semester[]>([]);
+  const [mergeSemesters, setMergeSemesters] = useState<Semester[]>([]);
+  const [groupSemesters, setGroupSemesters] = useState<Semester[]>([]);
+
   const [showCopyWeekForm, setShowCopyWeekForm] = useState(false);
-  const [copyWeekClassId, setCopyWeekClassId] = useState("");
   const [copyWeekTargetIndex, setCopyWeekTargetIndex] = useState("");
   const [copyWeekError, setCopyWeekError] = useState("");
 
@@ -189,8 +192,7 @@ export default function ScheduleGrid() {
   }, [selectedFormClass, form.roomId, rooms, policies]);
 
   async function loadLookups() {
-    const [sem, cls, subj, room, tch, ses, policy] = await Promise.all([
-      axiosClient.get<Semester[]>("/semesters"),
+    const [cls, subj, room, tch, ses, policy] = await Promise.all([
       axiosClient.get<SchoolClass[]>("/classes"),
       axiosClient.get<Subject[]>("/subjects"),
       axiosClient.get<Room[]>("/rooms"),
@@ -198,10 +200,18 @@ export default function ScheduleGrid() {
       axiosClient.get<Session[]>("/sessions"),
       axiosClient.get<SchedulingPolicyItem[]>("/scheduling-policy"),
     ]);
-    setSemesters(sem.data); setClasses(cls.data); setSubjects(subj.data);
+    setClasses(cls.data); setSubjects(subj.data);
     setRooms(room.data); setTeachers(tch.data);
     setSessions(ses.data.sort((a, b) => a.SortOrder - b.SortOrder));
     setPolicies(Object.fromEntries(policy.data.map((p) => [p.PolicyKey, Number(p.PolicyValue)])));
+  }
+
+  // Mỗi Lớp có bộ Kỳ học riêng — không còn danh sách Đợt học chung, phải nạp lại theo đúng
+  // classId đang chọn ở từng nơi (bộ lọc trên cùng, và riêng từng form tạo lịch).
+  async function loadSemestersFor(classId: string): Promise<Semester[]> {
+    if (!classId) return [];
+    const res = await axiosClient.get<Semester[]>("/semesters", { params: { classId } });
+    return res.data;
   }
 
   async function loadSchedule() {
@@ -214,6 +224,10 @@ export default function ScheduleGrid() {
 
   useEffect(() => { loadLookups(); }, []);
   useEffect(() => { loadSchedule(); }, [filters]);
+  useEffect(() => { loadSemestersFor(filters.classId).then(setSemesters); }, [filters.classId]);
+  useEffect(() => { loadSemestersFor(form.classId).then(setFormSemesters); }, [form.classId]);
+  useEffect(() => { loadSemestersFor(mergeForm.classIds[0] || "").then(setMergeSemesters); }, [mergeForm.classIds[0]]);
+  useEffect(() => { loadSemestersFor(groupForm.classId).then(setGroupSemesters); }, [groupForm.classId]);
 
   const eventsByDate = useMemo(() => {
     const map: Record<string, ScheduleItem[]> = {};
@@ -416,7 +430,7 @@ export default function ScheduleGrid() {
     e.preventDefault();
     setCopyWeekError("");
 
-    const classId = copyWeekClassId || filters.classId;
+    const classId = filters.classId;
     if (!classId) {
       setCopyWeekError("Vui lòng chọn lớp cần sao chép lịch");
       return;
@@ -526,13 +540,17 @@ export default function ScheduleGrid() {
       <h1>Thời khóa biểu</h1>
 
       <div className="filter-bar">
-        <select value={filters.semesterId} onChange={(e) => setFilters({ ...filters, semesterId: e.target.value })}>
-          <option value="">-- Chọn học kỳ để xem lịch --</option>
-          {semesters.map((s) => <option key={s.SemesterId} value={s.SemesterId}>{s.SemesterName}</option>)}
-        </select>
-        <select value={filters.classId} onChange={(e) => setFilters({ ...filters, classId: e.target.value })}>
+        <select value={filters.classId} onChange={(e) => setFilters({ classId: e.target.value, semesterId: "" })}>
           <option value="">-- Tất cả lớp --</option>
           {classes.map((c) => <option key={c.ClassId} value={c.ClassId}>{c.ClassName}</option>)}
+        </select>
+        <select
+          value={filters.semesterId}
+          onChange={(e) => setFilters({ ...filters, semesterId: e.target.value })}
+          disabled={!filters.classId}
+        >
+          <option value="">{filters.classId ? "-- Chọn học kỳ để xem lịch --" : "-- Chọn lớp trước --"}</option>
+          {semesters.map((s) => <option key={s.SemesterId} value={s.SemesterId}>{s.SemesterName}</option>)}
         </select>
         <button type="button" onClick={handleExportExcel}>Xuất Excel</button>
         {isAdmin && (
@@ -554,12 +572,8 @@ export default function ScheduleGrid() {
         <form className="schedule-form" onSubmit={handleSubmit}>
           <h3>Xếp buổi học mới</h3>
           <div className="form-grid">
-            <select value={form.semesterId} onChange={(e) => setForm({ ...form, semesterId: e.target.value })} required>
-              <option value="">Đợt học</option>
-              {semesters.map((s) => <option key={s.SemesterId} value={s.SemesterId}>{s.SemesterName}</option>)}
-            </select>
             <div>
-              <select value={form.classId} onChange={(e) => setForm({ ...form, classId: e.target.value })} required>
+              <select value={form.classId} onChange={(e) => setForm({ ...form, classId: e.target.value, semesterId: "" })} required>
                 <option value="">Lớp</option>
                 {classes.map((c) => <option key={c.ClassId} value={c.ClassId}>{c.ClassName}</option>)}
               </select>
@@ -569,6 +583,11 @@ export default function ScheduleGrid() {
                 </div>
               )}
             </div>
+            <select value={form.semesterId} onChange={(e) => setForm({ ...form, semesterId: e.target.value })}
+              required disabled={!form.classId}>
+              <option value="">{form.classId ? "Đợt học" : "-- Chọn lớp trước --"}</option>
+              {formSemesters.map((s) => <option key={s.SemesterId} value={s.SemesterId}>{s.SemesterName}</option>)}
+            </select>
             <select value={form.subjectId} onChange={(e) => setForm({ ...form, subjectId: e.target.value })} required>
               <option value="">Môn học</option>
               {subjects.map((s) => <option key={s.SubjectId} value={s.SubjectId}>{s.SubjectName}</option>)}
@@ -612,13 +631,11 @@ export default function ScheduleGrid() {
         <form className="schedule-form" onSubmit={handleMergeSubmit}>
           <h3>🔗 Ghép lớp (nhiều lớp học chung 1 buổi)</h3>
           <div className="form-grid">
-            <select value={mergeForm.semesterId} onChange={(e) => setMergeForm({ ...mergeForm, semesterId: e.target.value })} required>
-              <option value="">Đợt học</option>
-              {semesters.map((s) => <option key={s.SemesterId} value={s.SemesterId}>{s.SemesterName}</option>)}
-            </select>
             <div>
               <select multiple value={mergeForm.classIds} className="w-full"
-                onChange={(e) => setMergeForm({ ...mergeForm, classIds: [...e.target.selectedOptions].map((o) => o.value) })}>
+                onChange={(e) => setMergeForm({
+                  ...mergeForm, classIds: [...e.target.selectedOptions].map((o) => o.value), semesterId: "",
+                })}>
                 {classes.map((c) => <option key={c.ClassId} value={c.ClassId}>{c.ClassName}</option>)}
               </select>
               <div className="hint mt-1">Giữ Ctrl (Windows) / Cmd (Mac) để chọn ít nhất 2 lớp cần ghép</div>
@@ -629,6 +646,16 @@ export default function ScheduleGrid() {
                     <span className="error-text mt-0"> — Các lớp khác hệ đào tạo không thể ghép chung</span>
                   )}
                 </div>
+              )}
+            </div>
+            <div>
+              <select value={mergeForm.semesterId} onChange={(e) => setMergeForm({ ...mergeForm, semesterId: e.target.value })}
+                required disabled={mergeForm.classIds.length === 0}>
+                <option value="">{mergeForm.classIds.length > 0 ? "Đợt học" : "-- Chọn lớp trước --"}</option>
+                {mergeSemesters.map((s) => <option key={s.SemesterId} value={s.SemesterId}>{s.SemesterName}</option>)}
+              </select>
+              {mergeForm.classIds.length > 0 && (
+                <div className="hint mt-1">Danh sách Đợt học lấy theo lớp đầu tiên đã chọn — các lớp ghép chung phải cùng Đợt học.</div>
               )}
             </div>
             <select value={mergeForm.subjectId} onChange={(e) => setMergeForm({ ...mergeForm, subjectId: e.target.value })} required>
@@ -671,12 +698,8 @@ export default function ScheduleGrid() {
         <form className="schedule-form" onSubmit={handleGroupSubmit}>
           <h3>🧩 Xếp theo nhóm (1 lớp chia nhiều nhóm học song song)</h3>
           <div className="form-grid">
-            <select value={groupForm.semesterId} onChange={(e) => setGroupForm({ ...groupForm, semesterId: e.target.value })} required>
-              <option value="">Đợt học</option>
-              {semesters.map((s) => <option key={s.SemesterId} value={s.SemesterId}>{s.SemesterName}</option>)}
-            </select>
             <div>
-              <select value={groupForm.classId} onChange={(e) => setGroupForm({ ...groupForm, classId: e.target.value })} required>
+              <select value={groupForm.classId} onChange={(e) => setGroupForm({ ...groupForm, classId: e.target.value, semesterId: "" })} required>
                 <option value="">Lớp</option>
                 {classes.map((c) => <option key={c.ClassId} value={c.ClassId}>{c.ClassName}</option>)}
               </select>
@@ -684,6 +707,11 @@ export default function ScheduleGrid() {
                 <div className="hint mt-1">Sĩ số lớp: {selectedGroupClass.ClassSize} — chia đều hoặc theo thực tế vào các nhóm bên dưới</div>
               )}
             </div>
+            <select value={groupForm.semesterId} onChange={(e) => setGroupForm({ ...groupForm, semesterId: e.target.value })}
+              required disabled={!groupForm.classId}>
+              <option value="">{groupForm.classId ? "Đợt học" : "-- Chọn lớp trước --"}</option>
+              {groupSemesters.map((s) => <option key={s.SemesterId} value={s.SemesterId}>{s.SemesterName}</option>)}
+            </select>
             <select value={groupForm.subjectId} onChange={(e) => setGroupForm({ ...groupForm, subjectId: e.target.value })} required>
               <option value="">Môn học</option>
               {subjects.map((s) => <option key={s.SubjectId} value={s.SubjectId}>{s.SubjectName}</option>)}
@@ -758,7 +786,6 @@ export default function ScheduleGrid() {
             type="button"
             onClick={() => {
               setShowCopyWeekForm((v) => !v);
-              setCopyWeekClassId(filters.classId);
               setCopyWeekTargetIndex(String(Math.min(selectedWeekIndex + 1, semesterWeeks.length - 1)));
               setCopyWeekError("");
             }}
@@ -772,12 +799,6 @@ export default function ScheduleGrid() {
         <form className="schedule-form" onSubmit={handleCopyWeek}>
           <h3>📋 Sao chép lịch Tuần {currentWeek.weekNumber} ({fmtDDMM(currentWeek.start)} - {fmtDDMMYYYY(currentWeek.end)}) sang tuần khác trong kỳ</h3>
           <div className="form-grid">
-            {!filters.classId && (
-              <select value={copyWeekClassId} onChange={(e) => setCopyWeekClassId(e.target.value)} required>
-                <option value="">Chọn lớp cần sao chép</option>
-                {classes.map((c) => <option key={c.ClassId} value={c.ClassId}>{c.ClassName}</option>)}
-              </select>
-            )}
             <select value={copyWeekTargetIndex} onChange={(e) => setCopyWeekTargetIndex(e.target.value)} required>
               <option value="">Tuần đích</option>
               {semesterWeeks.map((w, idx) => (
@@ -792,7 +813,9 @@ export default function ScheduleGrid() {
         </form>
       )}
 
-      {!currentWeek ? (
+      {!filters.classId ? (
+        <p className="hint">Vui lòng chọn Lớp học ở trên để xem thời khóa biểu (mỗi lớp có bộ Kỳ học riêng).</p>
+      ) : !currentWeek ? (
         <p className="hint">Vui lòng chọn Học kỳ ở trên để xem thời khóa biểu theo tuần.</p>
       ) : sessions.length === 0 ? (
         <p className="hint">

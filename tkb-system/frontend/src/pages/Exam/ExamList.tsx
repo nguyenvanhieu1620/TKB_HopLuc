@@ -40,11 +40,11 @@ export default function ExamList() {
   const [minProctors, setMinProctors] = useState(1);
   const [filters, setFilters] = useState({ semesterId: "", classId: "" });
   const [form, setForm] = useState<ExamForm>(emptyForm);
+  const [formSemesters, setFormSemesters] = useState<Semester[]>([]);
   const [error, setError] = useState("");
 
   async function loadLookups() {
-    const [sem, cls, subj, room, tch, ses, policy] = await Promise.all([
-      axiosClient.get<Semester[]>("/semesters"),
+    const [cls, subj, room, tch, ses, policy] = await Promise.all([
       axiosClient.get<SchoolClass[]>("/classes"),
       axiosClient.get<Subject[]>("/subjects"),
       axiosClient.get<Room[]>("/rooms"),
@@ -52,11 +52,19 @@ export default function ExamList() {
       axiosClient.get<Session[]>("/sessions"),
       axiosClient.get<SchedulingPolicyItem[]>("/scheduling-policy"),
     ]);
-    setSemesters(sem.data); setClasses(cls.data); setSubjects(subj.data);
+    setClasses(cls.data); setSubjects(subj.data);
     setRooms(room.data); setTeachers(tch.data);
     setSessions(ses.data.sort((a, b) => a.SortOrder - b.SortOrder));
     const minProctorsPolicy = policy.data.find((p) => p.PolicyKey === "MinProctorsPerExam");
     if (minProctorsPolicy) setMinProctors(Number(minProctorsPolicy.PolicyValue));
+  }
+
+  // Mỗi Lớp có bộ Kỳ học riêng — nạp lại Đợt học theo đúng classId đang chọn (bộ lọc trên
+  // cùng, và riêng cho form xếp ca thi mới).
+  async function loadSemestersFor(classId: string): Promise<Semester[]> {
+    if (!classId) return [];
+    const res = await axiosClient.get<Semester[]>("/semesters", { params: { classId } });
+    return res.data;
   }
 
   async function loadExams() {
@@ -69,6 +77,8 @@ export default function ExamList() {
 
   useEffect(() => { loadLookups(); }, []);
   useEffect(() => { loadExams(); }, [filters]);
+  useEffect(() => { loadSemestersFor(filters.classId).then(setSemesters); }, [filters.classId]);
+  useEffect(() => { loadSemestersFor(form.classId).then(setFormSemesters); }, [form.classId]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -122,13 +132,17 @@ export default function ExamList() {
       <h1>Lịch thi kết thúc môn học</h1>
 
       <div className="filter-bar">
-        <select value={filters.semesterId} onChange={(e) => setFilters({ ...filters, semesterId: e.target.value })}>
-          <option value="">-- Tất cả đợt học --</option>
-          {semesters.map((s) => <option key={s.SemesterId} value={s.SemesterId}>{s.SemesterName}</option>)}
-        </select>
-        <select value={filters.classId} onChange={(e) => setFilters({ ...filters, classId: e.target.value })}>
+        <select value={filters.classId} onChange={(e) => setFilters({ classId: e.target.value, semesterId: "" })}>
           <option value="">-- Tất cả lớp --</option>
           {classes.map((c) => <option key={c.ClassId} value={c.ClassId}>{c.ClassName}</option>)}
+        </select>
+        <select
+          value={filters.semesterId}
+          onChange={(e) => setFilters({ ...filters, semesterId: e.target.value })}
+          disabled={!filters.classId}
+        >
+          <option value="">{filters.classId ? "-- Tất cả đợt học --" : "-- Chọn lớp trước --"}</option>
+          {semesters.map((s) => <option key={s.SemesterId} value={s.SemesterId}>{s.SemesterName}</option>)}
         </select>
       </div>
 
@@ -136,13 +150,14 @@ export default function ExamList() {
         <form className="schedule-form" onSubmit={handleSubmit}>
           <h3>Xếp ca thi mới</h3>
           <div className="form-grid">
-            <select value={form.semesterId} onChange={(e) => setForm({ ...form, semesterId: e.target.value })} required>
-              <option value="">Đợt học</option>
-              {semesters.map((s) => <option key={s.SemesterId} value={s.SemesterId}>{s.SemesterName}</option>)}
-            </select>
-            <select value={form.classId} onChange={(e) => setForm({ ...form, classId: e.target.value })} required>
+            <select value={form.classId} onChange={(e) => setForm({ ...form, classId: e.target.value, semesterId: "" })} required>
               <option value="">Lớp</option>
               {classes.map((c) => <option key={c.ClassId} value={c.ClassId}>{c.ClassName}</option>)}
+            </select>
+            <select value={form.semesterId} onChange={(e) => setForm({ ...form, semesterId: e.target.value })}
+              required disabled={!form.classId}>
+              <option value="">{form.classId ? "Đợt học" : "-- Chọn lớp trước --"}</option>
+              {formSemesters.map((s) => <option key={s.SemesterId} value={s.SemesterId}>{s.SemesterName}</option>)}
             </select>
             <select value={form.subjectId} onChange={(e) => setForm({ ...form, subjectId: e.target.value })} required>
               <option value="">Môn thi</option>

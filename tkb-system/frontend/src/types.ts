@@ -136,7 +136,17 @@ export interface Semester {
   AcademicYear: string;
   StartDate: string;
   EndDate: string;
+  ClassId: number | null;
+  TermNumber: number | null;
   IsActive: boolean;
+}
+
+export interface GeneratedTerm {
+  semesterId: number;
+  termNumber: number;
+  semesterName: string;
+  startDate: string;
+  endDate: string;
 }
 
 export type HolidayAppliesTo = "CQ" | "LT" | "ALL";
