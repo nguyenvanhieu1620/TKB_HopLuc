@@ -8,10 +8,17 @@ interface ItemForm {
   subjectId: string;
   termNumber: string;
   credits: string;
+  totalHours: string;
+  theoryHours: string;
+  practiceHours: string;
+  examHours: string;
   sortOrder: string;
 }
 
-const emptyForm: ItemForm = { subjectId: "", termNumber: "1", credits: "", sortOrder: "" };
+const emptyForm: ItemForm = {
+  subjectId: "", termNumber: "1", credits: "",
+  totalHours: "", theoryHours: "", practiceHours: "", examHours: "", sortOrder: "",
+};
 
 const ROMAN_VALUES: Record<string, number> = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };
 
@@ -161,6 +168,10 @@ export default function CurriculumItems() {
         await axiosClient.put(`/curriculum-items/${editingId}`, {
           termNumber: Number(form.termNumber),
           credits: form.credits ? Number(form.credits) : undefined,
+          totalHours: form.totalHours ? Number(form.totalHours) : undefined,
+          theoryHours: form.theoryHours ? Number(form.theoryHours) : undefined,
+          practiceHours: form.practiceHours ? Number(form.practiceHours) : undefined,
+          examHours: form.examHours ? Number(form.examHours) : undefined,
           sortOrder: form.sortOrder ? Number(form.sortOrder) : 0,
           isActive: true,
         });
@@ -170,6 +181,10 @@ export default function CurriculumItems() {
           subjectId: Number(form.subjectId),
           termNumber: Number(form.termNumber),
           credits: form.credits ? Number(form.credits) : undefined,
+          totalHours: form.totalHours ? Number(form.totalHours) : undefined,
+          theoryHours: form.theoryHours ? Number(form.theoryHours) : undefined,
+          practiceHours: form.practiceHours ? Number(form.practiceHours) : undefined,
+          examHours: form.examHours ? Number(form.examHours) : undefined,
           sortOrder: form.sortOrder ? Number(form.sortOrder) : undefined,
         });
       }
@@ -187,6 +202,10 @@ export default function CurriculumItems() {
       subjectId: String(item.SubjectId),
       termNumber: String(item.TermNumber),
       credits: item.Credits != null ? String(item.Credits) : "",
+      totalHours: item.TotalHours != null ? String(item.TotalHours) : "",
+      theoryHours: item.TheoryHours != null ? String(item.TheoryHours) : "",
+      practiceHours: item.PracticeHours != null ? String(item.PracticeHours) : "",
+      examHours: item.ExamHours != null ? String(item.ExamHours) : "",
       sortOrder: String(item.SortOrder),
     });
   }
@@ -409,6 +428,14 @@ export default function CurriculumItems() {
             onChange={(e) => setForm({ ...form, termNumber: e.target.value })} required />
           <input type="number" placeholder="Tín chỉ (ghi đè, để trống = mặc định)" value={form.credits}
             onChange={(e) => setForm({ ...form, credits: e.target.value })} />
+          <input type="number" placeholder="Tổng số giờ (ghi đè, để trống = mặc định)" value={form.totalHours}
+            onChange={(e) => setForm({ ...form, totalHours: e.target.value })} />
+          <input type="number" placeholder="Giờ lý thuyết (ghi đè, để trống = mặc định)" value={form.theoryHours}
+            onChange={(e) => setForm({ ...form, theoryHours: e.target.value })} />
+          <input type="number" placeholder="Giờ thực hành (ghi đè, để trống = mặc định)" value={form.practiceHours}
+            onChange={(e) => setForm({ ...form, practiceHours: e.target.value })} />
+          <input type="number" placeholder="Giờ thi/kiểm tra (ghi đè, để trống = mặc định)" value={form.examHours}
+            onChange={(e) => setForm({ ...form, examHours: e.target.value })} />
           <input type="number" placeholder="Thứ tự hiển thị" value={form.sortOrder}
             onChange={(e) => setForm({ ...form, sortOrder: e.target.value })} />
           <button type="submit">{editingId ? "Cập nhật" : "Thêm vào chương trình"}</button>
