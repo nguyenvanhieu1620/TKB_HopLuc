@@ -3,7 +3,7 @@ import axiosClient from "../../api/axiosClient";
 import { useAuth } from "../../context/AuthContext";
 import { ScheduleItem, Semester, SchoolClass, Subject, Room, Teacher, Session, SchedulingPolicyItem, ApiErrorResponse, CopyWeekResult } from "../../types";
 import { AxiosError } from "axios";
-import { addDays, addMonths, colorForId, getMonthMatrix, MONTH_LABEL, parseDateKey, startOfWeek, toDateKey, WEEKDAY_LABELS } from "../../../utils/calendar";
+import { addDays, colorForId, findTodayWeekIndex, getWeeksInSemester, parseDateKey, startOfWeek, toDateKey, WEEKDAY_LABELS } from "../../../utils/calendar";
 import { buildWorkbook, downloadWorkbook } from "../../../utils/excel";
 
 interface ScheduleForm {
@@ -69,7 +69,12 @@ const CAPACITY_POLICY_BY_ROOM_TYPE: Record<string, string> = {
   LamSang: "MaxStudentsPerClinicalGroup",
 };
 
-type ViewMode = "month" | "week";
+function fmtDDMM(d: Date): string {
+  return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+function fmtDDMMYYYY(d: Date): string {
+  return `${fmtDDMM(d)}/${d.getFullYear()}`;
+}
 
 function trainingModeLabel(mode: "CQ" | "LT" | null): string {
   if (mode === "CQ") return "Chính quy (CQ)";
@@ -129,12 +134,32 @@ export default function ScheduleGrid() {
 
   const [showCopyWeekForm, setShowCopyWeekForm] = useState(false);
   const [copyWeekClassId, setCopyWeekClassId] = useState("");
-  const [copyWeekTargetDate, setCopyWeekTargetDate] = useState("");
+  const [copyWeekTargetIndex, setCopyWeekTargetIndex] = useState("");
   const [copyWeekError, setCopyWeekError] = useState("");
 
-  const [viewMode, setViewMode] = useState<ViewMode>("month");
-  const [anchorDate, setAnchorDate] = useState<Date>(new Date());
-  const [selectedDay, setSelectedDay] = useState<string | null>(null);
+  const [selectedWeekIndex, setSelectedWeekIndex] = useState(0);
+
+  const selectedSemester = useMemo(
+    () => semesters.find((s) => String(s.SemesterId) === filters.semesterId) || null,
+    [semesters, filters.semesterId]
+  );
+
+  const semesterWeeks = useMemo(
+    () => (selectedSemester ? getWeeksInSemester(selectedSemester.StartDate, selectedSemester.EndDate) : []),
+    [selectedSemester]
+  );
+
+  // Khi đổi kỳ: mặc định chọn tuần chứa hôm nay nếu hôm nay nằm trong kỳ, ngược lại Tuần 1.
+  useEffect(() => {
+    if (semesterWeeks.length === 0) {
+      setSelectedWeekIndex(0);
+      return;
+    }
+    const todayIdx = findTodayWeekIndex(semesterWeeks);
+    setSelectedWeekIndex(todayIdx >= 0 ? todayIdx : 0);
+  }, [selectedSemester?.SemesterId]);
+
+  const currentWeek = semesterWeeks[selectedWeekIndex] || null;
 
   const selectedFormClass = useMemo(
     () => classes.find((c) => String(c.ClassId) === form.classId) || null,
@@ -203,11 +228,10 @@ export default function ScheduleGrid() {
     return map;
   }, [rows]);
 
-  const monthWeeks = useMemo(() => getMonthMatrix(anchorDate), [anchorDate]);
   const weekDays = useMemo(() => {
-    const start = startOfWeek(anchorDate);
-    return Array.from({ length: 7 }, (_, i) => addDays(start, i));
-  }, [anchorDate]);
+    if (!currentWeek) return [];
+    return Array.from({ length: 7 }, (_, i) => addDays(currentWeek.start, i));
+  }, [currentWeek]);
 
   interface DayGrid { bySession: Map<number, ScheduleItem[]>; leftover: ScheduleItem[] }
 
@@ -233,14 +257,15 @@ export default function ScheduleGrid() {
     return map;
   }, [weekDays, eventsByDate, sessions]);
 
-  function goToday() {
-    setAnchorDate(new Date());
+  function goCurrentWeek() {
+    const todayIdx = findTodayWeekIndex(semesterWeeks);
+    if (todayIdx >= 0) setSelectedWeekIndex(todayIdx);
   }
-  function goPrev() {
-    setAnchorDate(viewMode === "month" ? addMonths(anchorDate, -1) : addDays(anchorDate, -7));
+  function goPrevWeek() {
+    setSelectedWeekIndex((i) => Math.max(0, i - 1));
   }
-  function goNext() {
-    setAnchorDate(viewMode === "month" ? addMonths(anchorDate, 1) : addDays(anchorDate, 7));
+  function goNextWeek() {
+    setSelectedWeekIndex((i) => Math.min(semesterWeeks.length - 1, i + 1));
   }
 
   async function handleSubmit(e: FormEvent) {
@@ -396,17 +421,18 @@ export default function ScheduleGrid() {
       setCopyWeekError("Vui lòng chọn lớp cần sao chép lịch");
       return;
     }
-    if (!copyWeekTargetDate) {
+    const targetWeek = semesterWeeks[Number(copyWeekTargetIndex)];
+    if (!currentWeek || !targetWeek) {
       setCopyWeekError("Vui lòng chọn tuần đích");
       return;
     }
-
-    const sourceWeekStart = toDateKey(weekDays[0]);
-    const targetWeekStart = toDateKey(startOfWeek(parseDateKey(copyWeekTargetDate)));
-    if (targetWeekStart === sourceWeekStart) {
+    if (Number(copyWeekTargetIndex) === selectedWeekIndex) {
       setCopyWeekError("Tuần đích phải khác tuần đang xem");
       return;
     }
+
+    const sourceWeekStart = toDateKey(currentWeek.start);
+    const targetWeekStart = toDateKey(targetWeek.start);
 
     try {
       const res = await axiosClient.post<CopyWeekResult>("/schedule/copy-week", {
@@ -439,11 +465,6 @@ export default function ScheduleGrid() {
       await axiosClient.delete(`/schedule/${id}`);
     }
     loadSchedule();
-  }
-
-  function openNewFormForDay(dateKey: string) {
-    setForm({ ...emptyForm, scheduleDate: dateKey });
-    setShowForm(true);
   }
 
   function openNewFormForDaySession(dateKey: string, sessionId: number) {
@@ -506,7 +527,7 @@ export default function ScheduleGrid() {
 
       <div className="filter-bar">
         <select value={filters.semesterId} onChange={(e) => setFilters({ ...filters, semesterId: e.target.value })}>
-          <option value="">-- Tất cả đợt học --</option>
+          <option value="">-- Chọn học kỳ để xem lịch --</option>
           {semesters.map((s) => <option key={s.SemesterId} value={s.SemesterId}>{s.SemesterName}</option>)}
         </select>
         <select value={filters.classId} onChange={(e) => setFilters({ ...filters, classId: e.target.value })}>
@@ -713,24 +734,32 @@ export default function ScheduleGrid() {
 
       <div className="calendar-toolbar">
         <div className="calendar-nav">
-          <button type="button" onClick={goPrev}>‹</button>
-          <button type="button" onClick={goToday}>Hôm nay</button>
-          <button type="button" onClick={goNext}>›</button>
-          <span className="calendar-title">
-            {viewMode === "month" ? MONTH_LABEL(anchorDate) : `Tuần: ${toDateKey(weekDays[0])} → ${toDateKey(weekDays[6])}`}
-          </span>
+          <button type="button" onClick={goPrevWeek} disabled={!currentWeek || selectedWeekIndex === 0}>‹</button>
+          <select
+            value={selectedWeekIndex}
+            onChange={(e) => setSelectedWeekIndex(Number(e.target.value))}
+            disabled={semesterWeeks.length === 0}
+          >
+            {semesterWeeks.length === 0 && <option>-- Chưa có tuần --</option>}
+            {semesterWeeks.map((w, idx) => (
+              <option key={w.weekNumber} value={idx}>Tuần {w.weekNumber}</option>
+            ))}
+          </select>
+          <button type="button" onClick={goNextWeek} disabled={!currentWeek || selectedWeekIndex === semesterWeeks.length - 1}>›</button>
+          <button type="button" onClick={goCurrentWeek} disabled={findTodayWeekIndex(semesterWeeks) < 0}>Tuần hiện tại</button>
+          {currentWeek && (
+            <span className="calendar-title">
+              Tuần {currentWeek.weekNumber} ({fmtDDMM(currentWeek.start)} - {fmtDDMMYYYY(currentWeek.end)})
+            </span>
+          )}
         </div>
-        <div className="calendar-view-toggle">
-          <button type="button" className={viewMode === "month" ? "active" : ""} onClick={() => setViewMode("month")}>Theo tháng</button>
-          <button type="button" className={viewMode === "week" ? "active" : ""} onClick={() => setViewMode("week")}>Theo tuần</button>
-        </div>
-        {isAdmin && viewMode === "week" && (
+        {isAdmin && currentWeek && (
           <button
             type="button"
             onClick={() => {
               setShowCopyWeekForm((v) => !v);
               setCopyWeekClassId(filters.classId);
-              setCopyWeekTargetDate(toDateKey(addDays(weekDays[0], 7)));
+              setCopyWeekTargetIndex(String(Math.min(selectedWeekIndex + 1, semesterWeeks.length - 1)));
               setCopyWeekError("");
             }}
           >
@@ -739,9 +768,9 @@ export default function ScheduleGrid() {
         )}
       </div>
 
-      {isAdmin && viewMode === "week" && showCopyWeekForm && (
+      {isAdmin && currentWeek && showCopyWeekForm && (
         <form className="schedule-form" onSubmit={handleCopyWeek}>
-          <h3>📋 Sao chép lịch tuần {toDateKey(weekDays[0])} → {toDateKey(weekDays[6])} sang tuần khác</h3>
+          <h3>📋 Sao chép lịch Tuần {currentWeek.weekNumber} ({fmtDDMM(currentWeek.start)} - {fmtDDMMYYYY(currentWeek.end)}) sang tuần khác trong kỳ</h3>
           <div className="form-grid">
             {!filters.classId && (
               <select value={copyWeekClassId} onChange={(e) => setCopyWeekClassId(e.target.value)} required>
@@ -749,69 +778,22 @@ export default function ScheduleGrid() {
                 {classes.map((c) => <option key={c.ClassId} value={c.ClassId}>{c.ClassName}</option>)}
               </select>
             )}
-            <div>
-              <input type="date" value={copyWeekTargetDate}
-                onChange={(e) => setCopyWeekTargetDate(e.target.value)} required />
-              {copyWeekTargetDate && (
-                <div className="hint mt-1">
-                  Sẽ sao chép sang tuần: {toDateKey(startOfWeek(parseDateKey(copyWeekTargetDate)))} → {toDateKey(addDays(startOfWeek(parseDateKey(copyWeekTargetDate)), 6))}
-                </div>
-              )}
-            </div>
+            <select value={copyWeekTargetIndex} onChange={(e) => setCopyWeekTargetIndex(e.target.value)} required>
+              <option value="">Tuần đích</option>
+              {semesterWeeks.map((w, idx) => (
+                <option key={w.weekNumber} value={idx} disabled={idx === selectedWeekIndex}>
+                  Tuần {w.weekNumber} ({fmtDDMM(w.start)} - {fmtDDMMYYYY(w.end)})
+                </option>
+              ))}
+            </select>
           </div>
           <button type="submit">Sao chép lịch</button>
           {copyWeekError && <div className="error-text">{copyWeekError}</div>}
         </form>
       )}
 
-      {viewMode === "month" ? (
-        <div className="calendar-month">
-          <div className="calendar-weekday-row">
-            {WEEKDAY_LABELS.map((w) => <div key={w} className="calendar-weekday">{w}</div>)}
-          </div>
-          {monthWeeks.map((week, wi) => (
-            <div className="calendar-week-row" key={wi}>
-              {week.map((day) => {
-                const key = toDateKey(day);
-                const inMonth = day.getMonth() === anchorDate.getMonth();
-                const dayEvents = eventsByDate[key] || [];
-                const dayGroups = groupMergedEvents(dayEvents);
-                return (
-                  <div
-                    key={key}
-                    className={`calendar-day-cell ${inMonth ? "" : "dimmed"} ${key === todayKey ? "is-today" : ""}`}
-                    onClick={() => isAdmin && openNewFormForDay(key)}
-                  >
-                    <div className="calendar-day-number">{day.getDate()}</div>
-                    <div className="calendar-day-events">
-                      {dayGroups.slice(0, 3).map((g) => {
-                        const ev = g.events[0];
-                        const color = colorForId(ev.SubjectId);
-                        const classNames = g.events.map((e) => e.ClassName).join(", ");
-                        return (
-                          <div
-                            key={g.key}
-                            className="calendar-event-pill"
-                            style={{ background: color.bg, color: color.text }}
-                            title={`${ev.SubjectName}${ev.GroupLabel ? ` - ${ev.GroupLabel}` : ""} - ${classNames} - ${ev.RoomName} - ${ev.Teachers || ""}`}
-                            onClick={(e) => { e.stopPropagation(); setSelectedDay(key); }}
-                          >
-                            {g.isMerged && "🔗 "}{ev.StartTime}–{ev.EndTime} · {ev.RoomName}{ev.GroupLabel ? ` · ${ev.GroupLabel}` : ""}
-                          </div>
-                        );
-                      })}
-                      {dayGroups.length > 3 && (
-                        <div className="calendar-more" onClick={(e) => { e.stopPropagation(); setSelectedDay(key); }}>
-                          +{dayGroups.length - 3} buổi khác
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          ))}
-        </div>
+      {!currentWeek ? (
+        <p className="hint">Vui lòng chọn Học kỳ ở trên để xem thời khóa biểu theo tuần.</p>
       ) : sessions.length === 0 ? (
         <p className="hint">
           Chưa có Ca học nào — vào mục "Ca học" trong Danh mục để khai báo trước khi xem theo lưới ca.
@@ -915,43 +897,6 @@ export default function ScheduleGrid() {
             </div>
           )}
         </>
-      )}
-
-      {selectedDay && (
-        <div className="calendar-modal-backdrop" onClick={() => setSelectedDay(null)}>
-          <div className="calendar-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="calendar-modal-header">
-              <h3>Lịch học ngày {selectedDay}</h3>
-              <button onClick={() => setSelectedDay(null)}>✕</button>
-            </div>
-            <table className="data-table">
-              <thead><tr><th>Giờ</th><th>Lớp</th><th>Môn</th><th>Phòng</th><th>Giảng viên</th>{isAdmin && <th></th>}</tr></thead>
-              <tbody>
-                {groupMergedEvents(eventsByDate[selectedDay] || []).map((g) => {
-                  const ev = g.events[0];
-                  const classNames = g.events.map((e) => e.ClassName).join(", ");
-                  const scheduleIds = g.events.map((e) => e.ScheduleId);
-                  return (
-                    <tr key={g.key}>
-                      <td>{ev.StartTime}–{ev.EndTime}</td>
-                      <td>{g.isMerged && "🔗 "}{classNames}</td>
-                      <td>{ev.SubjectName}{ev.GroupLabel ? ` · ${ev.GroupLabel}` : ""}</td>
-                      <td>{ev.RoomName}</td>
-                      <td>{ev.Teachers}</td>
-                      {isAdmin && (
-                        <td>
-                          {g.isMerged
-                            ? <button onClick={() => handleDeleteGroup(scheduleIds)}>Xóa cả buổi ghép</button>
-                            : <button onClick={() => handleDelete(ev.ScheduleId)}>Xóa</button>}
-                        </td>
-                      )}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
       )}
     </div>
   );

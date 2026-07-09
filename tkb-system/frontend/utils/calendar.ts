@@ -1,4 +1,4 @@
-// Các hàm tiện ích cho hiển thị lịch dạng tháng/tuần (tuần bắt đầu từ Thứ 2)
+// Các hàm tiện ích cho hiển thị lịch dạng tuần theo học kỳ (tuần bắt đầu từ Thứ 2)
 
 export function toDateKey(d: Date): string {
   const y = d.getFullYear();
@@ -28,37 +28,34 @@ export function addDays(d: Date, n: number): Date {
   return date;
 }
 
-export function addMonths(d: Date, n: number): Date {
-  const date = new Date(d);
-  date.setMonth(date.getMonth() + n);
-  return date;
+export const WEEKDAY_LABELS = ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật"];
+
+export interface SemesterWeek {
+  weekNumber: number;
+  start: Date;
+  end: Date;
 }
 
-// Ma trận các tuần (mỗi tuần 7 ngày) phủ kín tháng chứa ngày d, tuần bắt đầu Thứ 2
-export function getMonthMatrix(d: Date): Date[][] {
-  const firstOfMonth = new Date(d.getFullYear(), d.getMonth(), 1);
-  const gridStart = startOfWeek(firstOfMonth);
-
-  const lastOfMonth = new Date(d.getFullYear(), d.getMonth() + 1, 0);
-  const gridEndBase = startOfWeek(lastOfMonth);
-  const gridEnd = addDays(gridEndBase, 6);
-
-  const weeks: Date[][] = [];
-  let cursor = gridStart;
-  while (cursor <= gridEnd) {
-    const week: Date[] = [];
-    for (let i = 0; i < 7; i++) {
-      week.push(cursor);
-      cursor = addDays(cursor, 1);
-    }
-    weeks.push(week);
+// Chia 1 học kỳ thành các tuần Thứ 2 -> CN. Tuần 1 bắt đầu từ Thứ 2 của tuần chứa StartDate,
+// tuần cuối là tuần chứa (hoặc vừa vượt qua) EndDate.
+export function getWeeksInSemester(startDate: string, endDate: string): SemesterWeek[] {
+  const end = parseDateKey(endDate);
+  const weeks: SemesterWeek[] = [];
+  let cursor = startOfWeek(parseDateKey(startDate));
+  let weekNumber = 1;
+  while (cursor <= end) {
+    weeks.push({ weekNumber, start: cursor, end: addDays(cursor, 6) });
+    cursor = addDays(cursor, 7);
+    weekNumber++;
   }
   return weeks;
 }
 
-export const WEEKDAY_LABELS = ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật"];
-
-export const MONTH_LABEL = (d: Date): string => `Tháng ${d.getMonth() + 1}, ${d.getFullYear()}`;
+// Tìm tuần chứa ngày hôm nay trong danh sách tuần của 1 kỳ; -1 nếu hôm nay ngoài phạm vi kỳ.
+export function findTodayWeekIndex(weeks: SemesterWeek[]): number {
+  const todayKey = toDateKey(new Date());
+  return weeks.findIndex((w) => todayKey >= toDateKey(w.start) && todayKey <= toDateKey(w.end));
+}
 
 // Bảng màu tuần hoàn để tô cho từng môn học (giữ tinh thần từ ứng dụng Excel cũ)
 const PALETTE = [
