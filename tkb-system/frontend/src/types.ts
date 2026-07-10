@@ -211,6 +211,8 @@ export interface BulkImportResult {
   successCount: number;
   errorCount: number;
   errors: { index: number; message: string }[];
+  skippedCount?: number;
+  skipped?: { index: number; message: string }[];
 }
 
 export interface SchedulingPolicyItem {

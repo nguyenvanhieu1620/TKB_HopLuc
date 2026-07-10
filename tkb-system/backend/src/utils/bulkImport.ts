@@ -1,5 +1,16 @@
 import { sql } from "../config/db";
 
+// Chuẩn hóa tên để so khớp trùng khi import Excel: trim, về chữ thường, gộp khoảng trắng thừa,
+// và chuẩn hóa khoảng trắng quanh dấu gạch ngang (vd "Nội khoa - Nhi khoa" và "Nội khoa- Nhi khoa"
+// phải được coi là trùng nhau).
+export function normalizeName(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/\s*-\s*/g, "-")
+    .replace(/\s+/g, " ");
+}
+
 export interface BulkRowError {
   index: number;
   message: string;
