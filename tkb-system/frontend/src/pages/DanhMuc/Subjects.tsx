@@ -29,6 +29,18 @@ interface ExcelSubjectRow {
   "Phân loại"?: string;
 }
 
+// Chuẩn hóa tên để so khớp linh hoạt khi import Excel: trim, về chữ thường, gộp khoảng trắng
+// thừa, và chuẩn hóa khoảng trắng quanh dấu gạch ngang — cả "-" (hyphen) lẫn "–"/"—" (en/em dash,
+// hay gặp khi copy từ Word/Excel) — thành 1 dạng thống nhất. Tên Khoa thật của trường thường có
+// định dạng phức tạp (vd "Khoa Điều dưỡng – Phục hồi chức năng") nên so khớp tuyệt đối rất dễ trật.
+function normalizeText(s: string): string {
+  return s
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/\s*[-–—]\s*/g, " - ");
+}
+
 interface ImportRow {
   rowNum: number;
   subjectCode: string;
@@ -41,6 +53,7 @@ interface ImportRow {
   examHours: number;
   category: string;
   error: string | null;
+  errorDetail?: string;
   selected: boolean;
 }
 
@@ -56,18 +69,24 @@ function parseImportRow(raw: ExcelSubjectRow, rowNum: number, faculties: Faculty
   const category = String(raw["Phân loại"] ?? "").trim();
 
   let error: string | null = null;
+  let errorDetail: string | undefined;
   let facultyId: number | null = null;
   if (!subjectName) error = "Thiếu tên môn học";
   if (facultyRaw) {
-    const match = faculties.find((f) => f.FacultyName.trim().toLowerCase() === facultyRaw.toLowerCase());
+    const match = faculties.find((f) => normalizeText(f.FacultyName) === normalizeText(facultyRaw));
     if (match) facultyId = match.FacultyId;
-    else if (!error) error = `Không tìm thấy khoa "${facultyRaw}"`;
+    else if (!error) {
+      error = `Không tìm thấy khoa "${facultyRaw}"`;
+      errorDetail = faculties.length > 0
+        ? `Các khoa hợp lệ trong hệ thống: ${faculties.map((f) => f.FacultyName).join(", ")}`
+        : "Hệ thống chưa có khoa nào — vào mục \"Khoa\" trong Danh mục để khai báo trước.";
+    }
   }
 
   return {
     rowNum, subjectCode, subjectName, facultyRaw, facultyId,
     credits, theoryHours, practiceHours, examHours, category,
-    error, selected: !error,
+    error, errorDetail, selected: !error,
   };
 }
 
@@ -296,7 +315,7 @@ export default function Subjects() {
                       <td>{r.category}</td>
                       <td>
                         {r.error
-                          ? <span className="error-text mt-0">{r.error}</span>
+                          ? <span className="error-text mt-0" title={r.errorDetail}>{r.error}</span>
                           : <span className="text-green-600 text-[13px]">✓ Hợp lệ</span>}
                       </td>
                     </tr>
