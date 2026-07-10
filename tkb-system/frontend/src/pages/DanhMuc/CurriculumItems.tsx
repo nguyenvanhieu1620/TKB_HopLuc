@@ -12,12 +12,13 @@ interface ItemForm {
   theoryHours: string;
   practiceHours: string;
   examHours: string;
+  cohortId: string;
   sortOrder: string;
 }
 
 const emptyForm: ItemForm = {
   subjectId: "", termNumber: "1", credits: "",
-  totalHours: "", theoryHours: "", practiceHours: "", examHours: "", sortOrder: "",
+  totalHours: "", theoryHours: "", practiceHours: "", examHours: "", cohortId: "", sortOrder: "",
 };
 
 const ROMAN_VALUES: Record<string, number> = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };
@@ -172,6 +173,7 @@ export default function CurriculumItems() {
           theoryHours: form.theoryHours ? Number(form.theoryHours) : undefined,
           practiceHours: form.practiceHours ? Number(form.practiceHours) : undefined,
           examHours: form.examHours ? Number(form.examHours) : undefined,
+          cohortId: form.cohortId ? Number(form.cohortId) : undefined,
           sortOrder: form.sortOrder ? Number(form.sortOrder) : 0,
           isActive: true,
         });
@@ -185,6 +187,7 @@ export default function CurriculumItems() {
           theoryHours: form.theoryHours ? Number(form.theoryHours) : undefined,
           practiceHours: form.practiceHours ? Number(form.practiceHours) : undefined,
           examHours: form.examHours ? Number(form.examHours) : undefined,
+          cohortId: form.cohortId ? Number(form.cohortId) : undefined,
           sortOrder: form.sortOrder ? Number(form.sortOrder) : undefined,
         });
       }
@@ -206,6 +209,7 @@ export default function CurriculumItems() {
       theoryHours: item.TheoryHours != null ? String(item.TheoryHours) : "",
       practiceHours: item.PracticeHours != null ? String(item.PracticeHours) : "",
       examHours: item.ExamHours != null ? String(item.ExamHours) : "",
+      cohortId: item.CohortId != null ? String(item.CohortId) : "",
       sortOrder: String(item.SortOrder),
     });
   }
@@ -436,6 +440,10 @@ export default function CurriculumItems() {
             onChange={(e) => setForm({ ...form, practiceHours: e.target.value })} />
           <input type="number" placeholder="Giờ thi/kiểm tra (ghi đè, để trống = mặc định)" value={form.examHours}
             onChange={(e) => setForm({ ...form, examHours: e.target.value })} />
+          <select value={form.cohortId} onChange={(e) => setForm({ ...form, cohortId: e.target.value })}>
+            <option value="">-- Tất cả các khóa --</option>
+            {cohorts.map((c) => <option key={c.CohortId} value={c.CohortId}>{c.CohortName}</option>)}
+          </select>
           <input type="number" placeholder="Thứ tự hiển thị" value={form.sortOrder}
             onChange={(e) => setForm({ ...form, sortOrder: e.target.value })} />
           <button type="submit">{editingId ? "Cập nhật" : "Thêm vào chương trình"}</button>

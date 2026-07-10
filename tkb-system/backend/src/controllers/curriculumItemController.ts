@@ -12,6 +12,7 @@ interface CurriculumItemBody {
   theoryHours?: number;
   practiceHours?: number;
   examHours?: number;
+  cohortId?: number;
   sortOrder?: number;
   isActive?: boolean;
 }
@@ -64,7 +65,7 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
   try {
     const {
       majorId, subjectId, termNumber, credits,
-      totalHours, theoryHours, practiceHours, examHours, sortOrder,
+      totalHours, theoryHours, practiceHours, examHours, cohortId, sortOrder,
     } = req.body as CurriculumItemBody;
     if (!majorId || !subjectId || !termNumber) {
       res.status(400).json({ message: "Thiếu ngành, môn học hoặc kỳ học" });
@@ -81,12 +82,13 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
       .input("theoryHours", sql.Int, theoryHours ?? null)
       .input("practiceHours", sql.Int, practiceHours ?? null)
       .input("examHours", sql.Int, examHours ?? null)
+      .input("cohortId", sql.Int, cohortId ?? null)
       .input("sortOrder", sql.Int, sortOrder ?? 0)
       .query<{ CurriculumItemId: number }>(`
         INSERT INTO CurriculumItems
-          (MajorId, SubjectId, TermNumber, Credits, TotalHours, TheoryHours, PracticeHours, ExamHours, SortOrder)
+          (MajorId, SubjectId, TermNumber, Credits, TotalHours, TheoryHours, PracticeHours, ExamHours, CohortId, SortOrder)
         OUTPUT INSERTED.CurriculumItemId
-        VALUES (@majorId, @subjectId, @termNumber, @credits, @totalHours, @theoryHours, @practiceHours, @examHours, @sortOrder)
+        VALUES (@majorId, @subjectId, @termNumber, @credits, @totalHours, @theoryHours, @practiceHours, @examHours, @cohortId, @sortOrder)
       `);
     res.status(201).json({ curriculumItemId: result.recordset[0].CurriculumItemId });
   } catch (err) {
@@ -106,7 +108,7 @@ export async function update(req: AuthRequest, res: Response, next: NextFunction
   try {
     const { id } = req.params;
     const {
-      termNumber, credits, totalHours, theoryHours, practiceHours, examHours, sortOrder, isActive,
+      termNumber, credits, totalHours, theoryHours, practiceHours, examHours, cohortId, sortOrder, isActive,
     } = req.body as CurriculumItemBody;
     const pool = await getPool();
     await pool
@@ -118,12 +120,13 @@ export async function update(req: AuthRequest, res: Response, next: NextFunction
       .input("theoryHours", sql.Int, theoryHours ?? null)
       .input("practiceHours", sql.Int, practiceHours ?? null)
       .input("examHours", sql.Int, examHours ?? null)
+      .input("cohortId", sql.Int, cohortId ?? null)
       .input("sortOrder", sql.Int, sortOrder ?? 0)
       .input("isActive", sql.Bit, isActive ?? true)
       .query(`
         UPDATE CurriculumItems SET TermNumber=@termNumber, Credits=@credits,
           TotalHours=@totalHours, TheoryHours=@theoryHours, PracticeHours=@practiceHours, ExamHours=@examHours,
-          SortOrder=@sortOrder, IsActive=@isActive
+          CohortId=@cohortId, SortOrder=@sortOrder, IsActive=@isActive
         WHERE CurriculumItemId = @id
       `);
     res.json({ message: "Đã cập nhật" });
