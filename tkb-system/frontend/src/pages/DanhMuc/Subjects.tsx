@@ -3,6 +3,7 @@ import axiosClient from "../../api/axiosClient";
 import { Subject, Faculty, BulkImportResult, ApiErrorResponse } from "../../types";
 import { AxiosError } from "axios";
 import { readWorkbook, sheetToRows, buildWorkbook, downloadWorkbook } from "../../../utils/excel";
+import { normalizeText } from "../../../utils/text";
 
 interface SubjectForm {
   subjectCode: string;
@@ -29,18 +30,6 @@ interface ExcelSubjectRow {
   "Phân loại"?: string;
 }
 
-// Chuẩn hóa tên để so khớp linh hoạt khi import Excel: trim, về chữ thường, gộp khoảng trắng
-// thừa, và chuẩn hóa khoảng trắng quanh dấu gạch ngang — cả "-" (hyphen) lẫn "–"/"—" (en/em dash,
-// hay gặp khi copy từ Word/Excel) — thành 1 dạng thống nhất. Tên Khoa thật của trường thường có
-// định dạng phức tạp (vd "Khoa Điều dưỡng – Phục hồi chức năng") nên so khớp tuyệt đối rất dễ trật.
-function normalizeText(s: string): string {
-  return s
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .replace(/\s*[-–—]\s*/g, " - ");
-}
-
 interface ImportRow {
   rowNum: number;
   subjectCode: string;
@@ -55,9 +44,12 @@ interface ImportRow {
   error: string | null;
   errorDetail?: string;
   selected: boolean;
+  duplicateOf: Subject | null;
+  resolution: "use-existing" | "create-new";
+  newName: string;
 }
 
-function parseImportRow(raw: ExcelSubjectRow, rowNum: number, faculties: Faculty[]): ImportRow {
+function parseImportRow(raw: ExcelSubjectRow, rowNum: number, faculties: Faculty[], existingSubjects: Subject[]): ImportRow {
   const subjectCode = String(raw["Mã môn"] ?? "").trim();
   const subjectName = String(raw["Tên môn"] ?? "").trim();
   const facultyRaw = String(raw["Khoa"] ?? "").trim();
@@ -83,11 +75,27 @@ function parseImportRow(raw: ExcelSubjectRow, rowNum: number, faculties: Faculty
     }
   }
 
+  const duplicateOf = subjectName
+    ? existingSubjects.find((s) => normalizeText(s.SubjectName) === normalizeText(subjectName)) || null
+    : null;
+  const newName = duplicateOf
+    ? (facultyRaw ? `${subjectName} (${facultyRaw})` : `${subjectName} (mới)`)
+    : subjectName;
+
   return {
     rowNum, subjectCode, subjectName, facultyRaw, facultyId,
     credits, theoryHours, practiceHours, examHours, category,
     error, errorDetail, selected: !error,
+    duplicateOf, resolution: "use-existing", newName,
   };
+}
+
+// Dòng chọn "Đây là môn khác, tạo mới" mà tên vẫn trùng (hoặc bỏ trống) — chưa thể nhập được.
+function isUnresolvedDuplicate(row: ImportRow, existingSubjects: Subject[]): boolean {
+  if (row.resolution !== "create-new") return false;
+  const trimmed = row.newName.trim();
+  if (!trimmed) return true;
+  return existingSubjects.some((s) => normalizeText(s.SubjectName) === normalizeText(trimmed));
 }
 
 export default function Subjects() {
@@ -208,11 +216,19 @@ export default function Subjects() {
     const wb = await readWorkbook(file);
     const sheet = wb.Sheets[wb.SheetNames[0]];
     const raws = sheetToRows<ExcelSubjectRow>(sheet);
-    setImportRows(raws.map((r, idx) => parseImportRow(r, idx + 2, faculties)));
+    setImportRows(raws.map((r, idx) => parseImportRow(r, idx + 2, faculties, items)));
   }
 
   function toggleRow(rowNum: number) {
     setImportRows((rows) => rows.map((r) => (r.rowNum === rowNum ? { ...r, selected: !r.selected } : r)));
+  }
+
+  function setRowResolution(rowNum: number, resolution: "use-existing" | "create-new") {
+    setImportRows((rows) => rows.map((r) => (r.rowNum === rowNum ? { ...r, resolution } : r)));
+  }
+
+  function setRowNewName(rowNum: number, newName: string) {
+    setImportRows((rows) => rows.map((r) => (r.rowNum === rowNum ? { ...r, newName } : r)));
   }
 
   function closeImport() {
@@ -226,12 +242,17 @@ export default function Subjects() {
   async function handleConfirmImport() {
     const selected = importRows.filter((r) => r.selected && !r.error);
     if (selected.length === 0) return;
+    if (selected.some((r) => isUnresolvedDuplicate(r, items))) {
+      setError("Có dòng chọn \"Đây là môn khác, tạo mới\" nhưng tên vẫn trùng hoặc để trống — sửa lại trước khi nhập.");
+      return;
+    }
+    setError("");
     setImporting(true);
     try {
       const res = await axiosClient.post<BulkImportResult>("/subjects/bulk", {
         subjects: selected.map((r) => ({
           subjectCode: r.subjectCode || undefined,
-          subjectName: r.subjectName,
+          subjectName: r.duplicateOf && r.resolution === "create-new" ? r.newName.trim() : r.subjectName,
           facultyId: r.facultyId ?? undefined,
           credits: r.credits ?? undefined,
           theoryHours: r.theoryHours,
@@ -281,7 +302,8 @@ export default function Subjects() {
         <div className="inline-form items-start flex-col">
           <p className="hint">
             Môn học được kiểm tra trùng theo TÊN đã chuẩn hóa (không phân biệt hoa/thường, khoảng trắng
-            thừa quanh dấu gạch ngang) — nếu đã tồn tại sẽ tự động bỏ qua, không tạo trùng.
+            thừa quanh dấu gạch ngang) — dòng nào trùng với môn đã có sẽ hỏi rõ trước khi nhập, không tự
+            động gộp hay bỏ qua.
           </p>
           <input type="file" accept=".xlsx,.xls" onChange={handleFile} />
 
@@ -294,7 +316,8 @@ export default function Subjects() {
                 <thead>
                   <tr>
                     <th></th><th>Dòng</th><th>Mã môn</th><th>Tên môn</th><th>Khoa</th>
-                    <th>Tín chỉ</th><th>LT</th><th>TH</th><th>Thi</th><th>Phân loại</th><th>Trạng thái</th>
+                    <th>Tín chỉ</th><th>LT</th><th>TH</th><th>Thi</th><th>Phân loại</th>
+                    <th>Trùng tên?</th><th>Trạng thái</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -314,6 +337,34 @@ export default function Subjects() {
                       <td>{r.examHours}</td>
                       <td>{r.category}</td>
                       <td>
+                        {r.duplicateOf ? (
+                          <div className="text-[13px]">
+                            <div className="hint mt-0">
+                              Đã có: <b>{r.duplicateOf.SubjectName}</b> ({r.duplicateOf.FacultyName || "chưa gán khoa"})
+                            </div>
+                            <label className="flex items-center gap-1">
+                              <input type="radio" name={`dup-${r.rowNum}`} checked={r.resolution === "use-existing"}
+                                onChange={() => setRowResolution(r.rowNum, "use-existing")} />
+                              Dùng chung
+                            </label>
+                            <label className="flex items-center gap-1">
+                              <input type="radio" name={`dup-${r.rowNum}`} checked={r.resolution === "create-new"}
+                                onChange={() => setRowResolution(r.rowNum, "create-new")} />
+                              Đây là môn khác, tạo mới
+                            </label>
+                            {r.resolution === "create-new" && (
+                              <>
+                                <input value={r.newName} onChange={(e) => setRowNewName(r.rowNum, e.target.value)}
+                                  placeholder="Tên môn mới" className="mt-1 w-full" />
+                                {isUnresolvedDuplicate(r, items) && (
+                                  <div className="error-text mt-0">Tên này vẫn trùng — đổi tên khác</div>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        ) : "—"}
+                      </td>
+                      <td>
                         {r.error
                           ? <span className="error-text mt-0" title={r.errorDetail}>{r.error}</span>
                           : <span className="text-green-600 text-[13px]">✓ Hợp lệ</span>}
@@ -323,7 +374,11 @@ export default function Subjects() {
                 </tbody>
               </table>
               <div className="flex gap-2 mt-3">
-                <button type="button" disabled={selectedCount === 0 || importing} onClick={handleConfirmImport}>
+                <button
+                  type="button"
+                  disabled={selectedCount === 0 || importing || importRows.some((r) => r.selected && isUnresolvedDuplicate(r, items))}
+                  onClick={handleConfirmImport}
+                >
                   {importing ? "Đang nhập..." : `Xác nhận nhập (${selectedCount})`}
                 </button>
                 <button type="button" onClick={closeImport}>Hủy</button>

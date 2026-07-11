@@ -3,6 +3,7 @@ import axiosClient from "../../api/axiosClient";
 import { CurriculumItem, Major, Subject, Cohort, BulkImportResult, ApiErrorResponse } from "../../types";
 import { AxiosError } from "axios";
 import { readWorkbook, sheetToRows, buildWorkbook, downloadWorkbook } from "../../../utils/excel";
+import { normalizeText } from "../../../utils/text";
 
 interface ItemForm {
   subjectId: string;
@@ -71,9 +72,12 @@ interface ImportRow {
   termNumber: number | null;
   error: string | null;
   selected: boolean;
+  duplicateOf: Subject | null;
+  resolution: "use-existing" | "create-new";
+  newName: string;
 }
 
-function parseSheetRows(sheetName: string, raws: ExcelCurriculumRow[], majors: Major[]): ImportRow[] {
+function parseSheetRows(sheetName: string, raws: ExcelCurriculumRow[], majors: Major[], existingSubjects: Subject[]): ImportRow[] {
   const major = majors.find((m) => m.MajorName.trim().toLowerCase() === sheetName.trim().toLowerCase());
   return raws.map((raw, idx) => {
     const rowNum = idx + 2;
@@ -94,13 +98,27 @@ function parseSheetRows(sheetName: string, raws: ExcelCurriculumRow[], majors: M
     else if (!subjectName) error = "Thiếu tên mô-đun";
     else if (!termNumber) error = `Không đọc được kỳ học "${termRaw}"`;
 
+    const duplicateOf = subjectName
+      ? existingSubjects.find((s) => normalizeText(s.SubjectName) === normalizeText(subjectName)) || null
+      : null;
+    const newName = duplicateOf ? `${subjectName} (${sheetName})` : subjectName;
+
     return {
       key: `${sheetName}__${rowNum}`, sheetName, rowNum,
       majorId: major?.MajorId ?? null,
       subjectCode, subjectName, credits, totalHours, theoryHours, practiceHours, examHours,
       termRaw, termNumber, error, selected: !error,
+      duplicateOf, resolution: "use-existing", newName,
     };
   });
+}
+
+// Dòng chọn "Đây là môn khác, tạo mới" mà tên vẫn trùng (hoặc bỏ trống) — chưa thể nhập được.
+function isUnresolvedDuplicate(row: ImportRow, existingSubjects: Subject[]): boolean {
+  if (row.resolution !== "create-new") return false;
+  const trimmed = row.newName.trim();
+  if (!trimmed) return true;
+  return existingSubjects.some((s) => normalizeText(s.SubjectName) === normalizeText(trimmed));
 }
 
 export default function CurriculumItems() {
@@ -249,13 +267,21 @@ export default function CurriculumItems() {
     setImportResultDetails([]);
     const wb = await readWorkbook(file);
     const rows = wb.SheetNames.flatMap((name) =>
-      parseSheetRows(name, sheetToRows<ExcelCurriculumRow>(wb.Sheets[name]), majors)
+      parseSheetRows(name, sheetToRows<ExcelCurriculumRow>(wb.Sheets[name]), majors, subjects)
     );
     setImportRows(rows);
   }
 
   function toggleRow(key: string) {
     setImportRows((rows) => rows.map((r) => (r.key === key ? { ...r, selected: !r.selected } : r)));
+  }
+
+  function setRowResolution(key: string, resolution: "use-existing" | "create-new") {
+    setImportRows((rows) => rows.map((r) => (r.key === key ? { ...r, resolution } : r)));
+  }
+
+  function setRowNewName(key: string, newName: string) {
+    setImportRows((rows) => rows.map((r) => (r.key === key ? { ...r, newName } : r)));
   }
 
   function closeImport() {
@@ -268,6 +294,11 @@ export default function CurriculumItems() {
   async function handleConfirmImport() {
     const toSend = importRows.filter((r) => r.selected && !r.error);
     if (toSend.length === 0) return;
+    if (toSend.some((r) => isUnresolvedDuplicate(r, subjects))) {
+      setError("Có dòng chọn \"Đây là môn khác, tạo mới\" nhưng tên vẫn trùng hoặc để trống — sửa lại trước khi nhập.");
+      return;
+    }
+    setError("");
     setImporting(true);
     try {
       const res = await axiosClient.post<BulkImportResult>("/curriculum-items/bulk", {
@@ -275,7 +306,7 @@ export default function CurriculumItems() {
           majorId: r.majorId,
           cohortId: importCohortId ? Number(importCohortId) : undefined,
           subjectCode: r.subjectCode,
-          subjectName: r.subjectName,
+          subjectName: r.duplicateOf && r.resolution === "create-new" ? r.newName.trim() : r.subjectName,
           credits: r.credits ?? undefined,
           totalHours: r.totalHours,
           theoryHours: r.theoryHours,
@@ -349,8 +380,9 @@ export default function CurriculumItems() {
         <div className="inline-form items-start flex-col">
           <p className="hint">
             Mỗi sheet trong file Excel là 1 ngành (tên sheet phải khớp đúng tên ngành đã có trong hệ thống).
-            Môn học được khớp theo TÊN môn đã chuẩn hóa (không phân biệt hoa/thường, khoảng trắng thừa) —
-            nếu đã tồn tại thì chỉ gán vào khung chương trình; nếu chưa có sẽ tạo môn học mới.
+            Môn học được khớp theo TÊN môn đã chuẩn hóa (không phân biệt hoa/thường, khoảng trắng thừa quanh
+            dấu gạch ngang) — dòng nào trùng với môn đã có sẽ hỏi rõ trước khi nhập, không tự động gộp hay
+            tạo mới; dòng tên hoàn toàn mới thì xử lý bình thường.
           </p>
           <label className="flex items-center gap-2">
             <span className="hint mt-0">Khóa học áp dụng (tùy chọn):</span>
@@ -373,7 +405,8 @@ export default function CurriculumItems() {
                     <thead>
                       <tr>
                         <th></th><th>Dòng</th><th>Mã MĐ</th><th>Tên mô-đun</th><th>Tín chỉ</th>
-                        <th>Tổng giờ</th><th>LT</th><th>TH</th><th>Thi</th><th>Kỳ</th><th>Trạng thái</th>
+                        <th>Tổng giờ</th><th>LT</th><th>TH</th><th>Thi</th><th>Kỳ</th>
+                        <th>Trùng tên?</th><th>Trạng thái</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -393,6 +426,34 @@ export default function CurriculumItems() {
                           <td>{r.examHours}</td>
                           <td>{r.termRaw}</td>
                           <td>
+                            {r.duplicateOf ? (
+                              <div className="text-[13px]">
+                                <div className="hint mt-0">
+                                  Đã có: <b>{r.duplicateOf.SubjectName}</b> ({r.duplicateOf.FacultyName || "chưa gán khoa"})
+                                </div>
+                                <label className="flex items-center gap-1">
+                                  <input type="radio" name={`dup-${r.key}`} checked={r.resolution === "use-existing"}
+                                    onChange={() => setRowResolution(r.key, "use-existing")} />
+                                  Dùng chung
+                                </label>
+                                <label className="flex items-center gap-1">
+                                  <input type="radio" name={`dup-${r.key}`} checked={r.resolution === "create-new"}
+                                    onChange={() => setRowResolution(r.key, "create-new")} />
+                                  Đây là môn khác, tạo mới
+                                </label>
+                                {r.resolution === "create-new" && (
+                                  <>
+                                    <input value={r.newName} onChange={(e) => setRowNewName(r.key, e.target.value)}
+                                      placeholder="Tên môn mới" className="mt-1 w-full" />
+                                    {isUnresolvedDuplicate(r, subjects) && (
+                                      <div className="error-text mt-0">Tên này vẫn trùng — đổi tên khác</div>
+                                    )}
+                                  </>
+                                )}
+                              </div>
+                            ) : "—"}
+                          </td>
+                          <td>
                             {r.error
                               ? <span className="error-text mt-0">{r.error}</span>
                               : <span className="text-green-600 text-[13px]">✓ Hợp lệ</span>}
@@ -404,7 +465,11 @@ export default function CurriculumItems() {
                 </div>
               ))}
               <div className="flex gap-2 mt-1">
-                <button type="button" disabled={selectedCount === 0 || importing} onClick={handleConfirmImport}>
+                <button
+                  type="button"
+                  disabled={selectedCount === 0 || importing || importRows.some((r) => r.selected && isUnresolvedDuplicate(r, subjects))}
+                  onClick={handleConfirmImport}
+                >
                   {importing ? "Đang nhập..." : `Xác nhận nhập (${selectedCount})`}
                 </button>
                 <button type="button" onClick={closeImport}>Hủy</button>

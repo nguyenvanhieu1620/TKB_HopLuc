@@ -1,7 +1,7 @@
 import { Response, NextFunction } from "express";
 import { sql, getPool } from "../config/db";
 import { AuthRequest, HttpError } from "../types";
-import { runRowInSavepoint, BulkResult } from "../utils/bulkImport";
+import { runRowInSavepoint, normalizeName, BulkResult } from "../utils/bulkImport";
 
 interface CurriculumItemBody {
   majorId?: number;
@@ -196,25 +196,27 @@ export async function bulkCreate(req: AuthRequest, res: Response, next: NextFunc
 
     const result: BulkResult = { successCount: 0, errorCount: 0, errors: [] };
 
+    // Nạp map tên môn đã chuẩn hóa -> SubjectId 1 lần, cập nhật dần khi tạo môn mới trong vòng
+    // lặp — để 2 dòng cùng tên môn MỚI trong cùng file import link về đúng 1 Subject thay vì tạo
+    // đôi. Dùng normalizeName dùng chung (Việc AI/AN) thay vì chỉ trim+lower như trước, để khớp
+    // đúng cả khi tên môn chỉ khác nhau về khoảng trắng/loại dấu gạch ngang.
+    const existingResult = await new sql.Request(transaction).query<{ SubjectId: number; SubjectName: string }>(
+      `SELECT SubjectId, SubjectName FROM Subjects`
+    );
+    const subjectIdByNormalizedName = new Map<string, number>(
+      existingResult.recordset.map((r) => [normalizeName(r.SubjectName), r.SubjectId])
+    );
+
     for (let i = 0; i < items.length; i++) {
       const row = items[i];
-      const rowError = await runRowInSavepoint(transaction, i, async (request) => {
+      const rowError = await runRowInSavepoint(transaction, i, async () => {
         if (!row.majorId || !row.subjectCode || !row.subjectName || !row.termNumber) {
           throw new Error("Thiếu ngành, mã môn, tên môn hoặc kỳ học");
         }
 
-        // Khớp môn đã tồn tại theo TÊN đã chuẩn hóa (trim + không phân biệt hoa/thường) —
-        // KHÔNG khớp theo mã, vì mã môn không duy nhất giữa các ngành khác nhau.
-        const existing = await request
-          .input("subjectName", sql.NVarChar, row.subjectName)
-          .query<{ SubjectId: number }>(`
-            SELECT SubjectId FROM Subjects WHERE LOWER(LTRIM(RTRIM(SubjectName))) = LOWER(LTRIM(RTRIM(@subjectName)))
-          `);
-
-        let subjectId: number;
-        if (existing.recordset[0]) {
-          subjectId = existing.recordset[0].SubjectId;
-        } else {
+        const normalized = normalizeName(row.subjectName);
+        let subjectId = subjectIdByNormalizedName.get(normalized);
+        if (subjectId === undefined) {
           const inserted = await new sql.Request(transaction)
             .input("subjectCode", sql.NVarChar, row.subjectCode)
             .input("subjectName", sql.NVarChar, row.subjectName)
@@ -228,6 +230,7 @@ export async function bulkCreate(req: AuthRequest, res: Response, next: NextFunc
               VALUES (@subjectCode, @subjectName, @credits, @theoryHours, @practiceHours, @examHours)
             `);
           subjectId = inserted.recordset[0].SubjectId;
+          subjectIdByNormalizedName.set(normalized, subjectId);
         }
 
         await new sql.Request(transaction)
