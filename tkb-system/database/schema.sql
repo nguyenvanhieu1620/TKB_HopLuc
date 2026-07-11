@@ -54,16 +54,22 @@ GO
 
 /* ============================================================
    2. DANH MỤC: MÔN HỌC / MÔ-ĐUN
-   Lưu ý: Môn học KHÔNG gắn cứng với 1 Ngành — một môn (vd Tin học,
-   Tiếng Anh) có thể dùng chung cho nhiều ngành khác nhau. Quan hệ
-   Ngành <-> Môn học (nhiều-nhiều) được thể hiện qua bảng
-   CurriculumItems (Khung chương trình đào tạo) ở phần 2a bên dưới.
+   Lưu ý (Việc AQ): mỗi Môn học gắn TRỰC TIẾP với 1 Ngành cụ thể qua
+   MajorId — theo đúng quy ước mã hóa của trường (Thông báo
+   390/TB-CĐYDHL), mỗi Ngành tự có mã riêng cho từng môn dù nội dung
+   tương tự (vd "Toán cao cấp" mã D08 ở ngành Dược, mã Y08 ở ngành Y
+   sỹ — 2 dòng Subjects riêng biệt, được phép TRÙNG TÊN). SubjectCode
+   vì vậy BẮT BUỘC và phải DUY NHẤT toàn hệ thống (ràng buộc lọc theo
+   SubjectCode IS NOT NULL để tương thích ngược với dữ liệu cũ chưa
+   có mã). Bảng CurriculumItems (Khung chương trình đào tạo, phần 2a
+   bên dưới) không đổi cấu trúc — vẫn giữ nguyên.
    ============================================================ */
 CREATE TABLE Subjects (
     SubjectId     INT IDENTITY(1,1) PRIMARY KEY,
-    SubjectCode   NVARCHAR(20)    NULL,               -- vd 'Y09', 'MH01'
+    SubjectCode   NVARCHAR(20)    NULL,               -- vd 'Y09', 'MH01' — bắt buộc + duy nhất (xem ràng buộc UQ_Subjects_SubjectCode)
     SubjectName   NVARCHAR(150)   NOT NULL,
     FacultyId     INT             NULL,               -- khoa phụ trách giảng dạy
+    MajorId       INT             NULL,               -- ngành sở hữu môn này (Việc AQ)
     Category      NVARCHAR(20)    NULL,               -- phân loại môn: LyThuyet | ThucHanh | LamSang...
     Credits       INT             NULL,               -- số tín chỉ (giá trị chuẩn/mặc định)
     TheoryHours   INT             NOT NULL DEFAULT 0, -- giờ lý thuyết
@@ -71,8 +77,12 @@ CREATE TABLE Subjects (
     ExamHours     INT             NOT NULL DEFAULT 0, -- giờ thi/kiểm tra
     IsActive      BIT             NOT NULL DEFAULT 1,
     CreatedAt     DATETIME2       NOT NULL DEFAULT SYSDATETIME(),
-    CONSTRAINT FK_Subjects_Faculty FOREIGN KEY (FacultyId) REFERENCES Faculties(FacultyId)
+    CONSTRAINT FK_Subjects_Faculty FOREIGN KEY (FacultyId) REFERENCES Faculties(FacultyId),
+    CONSTRAINT FK_Subjects_Major FOREIGN KEY (MajorId) REFERENCES Majors(MajorId)
 );
+GO
+
+CREATE UNIQUE INDEX UQ_Subjects_SubjectCode ON Subjects(SubjectCode) WHERE SubjectCode IS NOT NULL;
 GO
 
 /* ============================================================

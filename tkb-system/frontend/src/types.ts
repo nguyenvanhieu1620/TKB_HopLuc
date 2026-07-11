@@ -59,6 +59,8 @@ export interface Subject {
   SubjectName: string;
   FacultyId: number | null;
   FacultyName: string | null;
+  MajorId: number | null;
+  MajorName: string | null;
   Credits: number | null;
   TheoryHours: number;
   PracticeHours: number;

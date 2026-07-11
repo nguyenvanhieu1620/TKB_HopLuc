@@ -1,6 +1,6 @@
 import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
 import axiosClient from "../../api/axiosClient";
-import { Subject, Faculty, BulkImportResult, ApiErrorResponse } from "../../types";
+import { Subject, Faculty, Major, BulkImportResult, ApiErrorResponse } from "../../types";
 import { AxiosError } from "axios";
 import { readWorkbook, sheetToRows, buildWorkbook, downloadWorkbook } from "../../../utils/excel";
 import { normalizeText } from "../../../utils/text";
@@ -9,6 +9,7 @@ interface SubjectForm {
   subjectCode: string;
   subjectName: string;
   facultyId: string;
+  majorId: string;
   credits: string;
   theoryHours: string;
   practiceHours: string;
@@ -17,13 +18,14 @@ interface SubjectForm {
 }
 
 const emptyForm: SubjectForm = {
-  subjectCode: "", subjectName: "", facultyId: "", credits: "", theoryHours: "", practiceHours: "", examHours: "",
+  subjectCode: "", subjectName: "", facultyId: "", majorId: "", credits: "", theoryHours: "", practiceHours: "", examHours: "",
   isActive: true,
 };
 
 interface ExcelSubjectRow {
   "Mã môn"?: string | number;
   "Tên môn"?: string;
+  "Ngành"?: string;
   "Khoa"?: string;
   "Số tín chỉ"?: string | number;
   "Giờ lý thuyết"?: string | number;
@@ -36,6 +38,8 @@ interface ImportRow {
   rowNum: number;
   subjectCode: string;
   subjectName: string;
+  majorRaw: string;
+  majorId: number | null;
   facultyRaw: string;
   facultyId: number | null;
   credits: number | null;
@@ -46,14 +50,14 @@ interface ImportRow {
   error: string | null;
   errorDetail?: string;
   selected: boolean;
-  duplicateOf: Subject | null;
-  resolution: "use-existing" | "create-new";
-  newName: string;
 }
 
-function parseImportRow(raw: ExcelSubjectRow, rowNum: number, faculties: Faculty[], existingSubjects: Subject[]): ImportRow {
+// Việc AQ: mỗi Môn học gắn TRỰC TIẾP 1 Ngành, Mã môn bắt buộc + duy nhất toàn hệ thống — trùng
+// TÊN giữa các Ngành khác nhau giờ là bình thường (không còn kiểm tra/hỏi gộp theo tên nữa).
+function parseImportRow(raw: ExcelSubjectRow, rowNum: number, faculties: Faculty[], majors: Major[]): ImportRow {
   const subjectCode = String(raw["Mã môn"] ?? "").trim();
   const subjectName = String(raw["Tên môn"] ?? "").trim();
+  const majorRaw = String(raw["Ngành"] ?? "").trim();
   const facultyRaw = String(raw["Khoa"] ?? "").trim();
   const creditsRaw = raw["Số tín chỉ"];
   const credits = creditsRaw !== undefined && creditsRaw !== "" ? Number(creditsRaw) : null;
@@ -65,7 +69,22 @@ function parseImportRow(raw: ExcelSubjectRow, rowNum: number, faculties: Faculty
   let error: string | null = null;
   let errorDetail: string | undefined;
   let facultyId: number | null = null;
+  let majorId: number | null = null;
+
   if (!subjectName) error = "Thiếu tên môn học";
+  if (!error && !subjectCode) error = "Thiếu mã môn";
+
+  if (!majorRaw) {
+    if (!error) error = "Thiếu ngành";
+  } else {
+    const match = majors.find((m) => normalizeText(m.MajorName) === normalizeText(majorRaw));
+    if (match) majorId = match.MajorId;
+    else if (!error) {
+      error = `Không tìm thấy ngành "${majorRaw}"`;
+      errorDetail = `Các ngành hợp lệ trong hệ thống: ${majors.map((m) => m.MajorName).join(", ")}`;
+    }
+  }
+
   if (facultyRaw) {
     const match = faculties.find((f) => normalizeText(f.FacultyName) === normalizeText(facultyRaw));
     if (match) facultyId = match.FacultyId;
@@ -77,53 +96,63 @@ function parseImportRow(raw: ExcelSubjectRow, rowNum: number, faculties: Faculty
     }
   }
 
-  const duplicateOf = subjectName
-    ? existingSubjects.find((s) => normalizeText(s.SubjectName) === normalizeText(subjectName)) || null
-    : null;
-  const newName = duplicateOf
-    ? (facultyRaw ? `${subjectName} (${facultyRaw})` : `${subjectName} (mới)`)
-    : subjectName;
-
   return {
-    rowNum, subjectCode, subjectName, facultyRaw, facultyId,
+    rowNum, subjectCode, subjectName, majorRaw, majorId, facultyRaw, facultyId,
     credits, theoryHours, practiceHours, examHours, category,
     error, errorDetail, selected: !error,
-    duplicateOf, resolution: "use-existing", newName,
   };
-}
-
-// Dòng chọn "Đây là môn khác, tạo mới" mà tên vẫn trùng (hoặc bỏ trống) — chưa thể nhập được.
-function isUnresolvedDuplicate(row: ImportRow, existingSubjects: Subject[]): boolean {
-  if (row.resolution !== "create-new") return false;
-  const trimmed = row.newName.trim();
-  if (!trimmed) return true;
-  return existingSubjects.some((s) => normalizeText(s.SubjectName) === normalizeText(trimmed));
 }
 
 export default function Subjects() {
   const [items, setItems] = useState<Subject[]>([]);
   const [faculties, setFaculties] = useState<Faculty[]>([]);
+  const [majors, setMajors] = useState<Major[]>([]);
   const [form, setForm] = useState<SubjectForm>(emptyForm);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [statusFilter, setStatusFilter] = useState<"" | "true" | "false">("");
+  const [trainingModeFilter, setTrainingModeFilter] = useState("");
+  const [majorFilter, setMajorFilter] = useState("");
+  const [facultyFilter, setFacultyFilter] = useState("");
 
   const [showImport, setShowImport] = useState(false);
   const [importRows, setImportRows] = useState<ImportRow[]>([]);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<BulkImportResult | null>(null);
   const [importResultDetails, setImportResultDetails] = useState<string[]>([]);
-  const [importSkippedDetails, setImportSkippedDetails] = useState<string[]>([]);
 
-  async function load() {
-    const [subRes, facultyRes] = await Promise.all([
-      axiosClient.get<Subject[]>("/subjects"),
+  async function loadLookups() {
+    const [facultyRes, majorRes] = await Promise.all([
       axiosClient.get<Faculty[]>("/faculties"),
+      axiosClient.get<Major[]>("/majors"),
     ]);
-    setItems(subRes.data);
     setFaculties(facultyRes.data);
+    setMajors(majorRes.data);
   }
-  useEffect(() => { load(); }, []);
+  useEffect(() => { loadLookups(); }, []);
+
+  async function loadItems() {
+    const params: Record<string, string> = {};
+    if (facultyFilter) params.facultyId = facultyFilter;
+    if (majorFilter) params.majorId = majorFilter;
+    if (trainingModeFilter) params.trainingMode = trainingModeFilter;
+    const res = await axiosClient.get<Subject[]>("/subjects", { params });
+    setItems(res.data);
+  }
+  useEffect(() => { loadItems(); }, [facultyFilter, majorFilter, trainingModeFilter]);
+
+  const filteredMajorsForFilter = useMemo(
+    () => (trainingModeFilter ? majors.filter((m) => m.TrainingMode === trainingModeFilter) : majors),
+    [majors, trainingModeFilter]
+  );
+
+  function handleTrainingModeFilterChange(value: string) {
+    setTrainingModeFilter(value);
+    if (majorFilter) {
+      const stillValid = majors.some((m) => String(m.MajorId) === majorFilter && (!value || m.TrainingMode === value));
+      if (!stillValid) setMajorFilter("");
+    }
+  }
 
   function resetForm() {
     setForm(emptyForm);
@@ -133,10 +162,19 @@ export default function Subjects() {
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError("");
+    if (!form.subjectCode.trim()) {
+      setError("Vui lòng nhập mã môn");
+      return;
+    }
+    if (!form.majorId) {
+      setError("Vui lòng chọn ngành");
+      return;
+    }
     const payload = {
-      subjectCode: form.subjectCode,
+      subjectCode: form.subjectCode.trim(),
       subjectName: form.subjectName,
       facultyId: form.facultyId ? Number(form.facultyId) : undefined,
+      majorId: Number(form.majorId),
       credits: form.credits ? Number(form.credits) : undefined,
       theoryHours: Number(form.theoryHours) || 0,
       practiceHours: Number(form.practiceHours) || 0,
@@ -150,7 +188,7 @@ export default function Subjects() {
         await axiosClient.post("/subjects", payload);
       }
       resetForm();
-      load();
+      loadItems();
     } catch (err) {
       const axiosErr = err as AxiosError<ApiErrorResponse>;
       setError(axiosErr.response?.data?.message || "Có lỗi xảy ra");
@@ -163,6 +201,7 @@ export default function Subjects() {
       subjectCode: item.SubjectCode || "",
       subjectName: item.SubjectName,
       facultyId: item.FacultyId ? String(item.FacultyId) : "",
+      majorId: item.MajorId != null ? String(item.MajorId) : "",
       credits: item.Credits != null ? String(item.Credits) : "",
       theoryHours: String(item.TheoryHours),
       practiceHours: String(item.PracticeHours),
@@ -175,7 +214,7 @@ export default function Subjects() {
     if (!confirm("Xóa môn học này?")) return;
     try {
       await axiosClient.delete(`/subjects/${id}`);
-      load();
+      loadItems();
     } catch (err) {
       const axiosErr = err as AxiosError<ApiErrorResponse>;
       alert(axiosErr.response?.data?.message || "Không thể xóa");
@@ -187,23 +226,25 @@ export default function Subjects() {
       name: "Môn học",
       rows: [
         {
-          "Mã môn": "Y09",
-          "Tên môn": "Dược lý học",
+          "Mã môn": "D08",
+          "Tên môn": "Toán cao cấp",
+          "Ngành": majors[0]?.MajorName || "Ngành Dược chính quy",
           "Khoa": faculties[0]?.FacultyName || "Khoa Dược",
           "Số tín chỉ": 3,
           "Giờ lý thuyết": 30,
           "Giờ thực hành": 15,
           "Giờ thi/kiểm tra": 2,
-          "Phân loại": "Chuyên ngành",
+          "Phân loại": "Đại cương",
         },
         {
-          "Mã môn": "D01",
-          "Tên môn": "Giáo dục thể chất",
+          "Mã môn": "Y08",
+          "Tên môn": "Toán cao cấp",
+          "Ngành": majors[1]?.MajorName || "Ngành Y sỹ đa khoa",
           "Khoa": "",
-          "Số tín chỉ": 1,
-          "Giờ lý thuyết": 15,
-          "Giờ thực hành": 0,
-          "Giờ thi/kiểm tra": 0,
+          "Số tín chỉ": 3,
+          "Giờ lý thuyết": 30,
+          "Giờ thực hành": 15,
+          "Giờ thi/kiểm tra": 2,
           "Phân loại": "Đại cương",
         },
       ],
@@ -217,23 +258,14 @@ export default function Subjects() {
     if (!file) return;
     setImportResult(null);
     setImportResultDetails([]);
-    setImportSkippedDetails([]);
     const wb = await readWorkbook(file);
     const sheet = wb.Sheets[wb.SheetNames[0]];
     const raws = sheetToRows<ExcelSubjectRow>(sheet);
-    setImportRows(raws.map((r, idx) => parseImportRow(r, idx + 2, faculties, items)));
+    setImportRows(raws.map((r, idx) => parseImportRow(r, idx + 2, faculties, majors)));
   }
 
   function toggleRow(rowNum: number) {
     setImportRows((rows) => rows.map((r) => (r.rowNum === rowNum ? { ...r, selected: !r.selected } : r)));
-  }
-
-  function setRowResolution(rowNum: number, resolution: "use-existing" | "create-new") {
-    setImportRows((rows) => rows.map((r) => (r.rowNum === rowNum ? { ...r, resolution } : r)));
-  }
-
-  function setRowNewName(rowNum: number, newName: string) {
-    setImportRows((rows) => rows.map((r) => (r.rowNum === rowNum ? { ...r, newName } : r)));
   }
 
   function closeImport() {
@@ -241,24 +273,19 @@ export default function Subjects() {
     setImportRows([]);
     setImportResult(null);
     setImportResultDetails([]);
-    setImportSkippedDetails([]);
   }
 
   async function handleConfirmImport() {
     const selected = importRows.filter((r) => r.selected && !r.error);
     if (selected.length === 0) return;
-    if (selected.some((r) => isUnresolvedDuplicate(r, items))) {
-      setError("Có dòng chọn \"Đây là môn khác, tạo mới\" nhưng tên vẫn trùng hoặc để trống — sửa lại trước khi nhập.");
-      return;
-    }
-    setError("");
     setImporting(true);
     try {
       const res = await axiosClient.post<BulkImportResult>("/subjects/bulk", {
         subjects: selected.map((r) => ({
-          subjectCode: r.subjectCode || undefined,
-          subjectName: r.duplicateOf && r.resolution === "create-new" ? r.newName.trim() : r.subjectName,
+          subjectCode: r.subjectCode,
+          subjectName: r.subjectName,
           facultyId: r.facultyId ?? undefined,
+          majorId: r.majorId ?? undefined,
           credits: r.credits ?? undefined,
           theoryHours: r.theoryHours,
           practiceHours: r.practiceHours,
@@ -269,14 +296,10 @@ export default function Subjects() {
       setImportResult(res.data);
       setImportResultDetails((res.data.errors || []).map((e) => {
         const row = selected[e.index];
-        return `Dòng ${row.rowNum} (${row.subjectName}): ${e.message}`;
-      }));
-      setImportSkippedDetails((res.data.skipped || []).map((s) => {
-        const row = selected[s.index];
-        return `Dòng ${row.rowNum} (${row.subjectName}): ${s.message}`;
+        return `Dòng ${row.rowNum} (${row.subjectCode} - ${row.subjectName}): ${e.message}`;
       }));
       setImportRows([]);
-      load();
+      loadItems();
     } catch (err) {
       const axiosErr = err as AxiosError<ApiErrorResponse>;
       setError(axiosErr.response?.data?.message || "Có lỗi khi nhập dữ liệu");
@@ -298,13 +321,27 @@ export default function Subjects() {
     <div>
       <h1>Quản lý Môn học</h1>
       <p className="hint">
-        Môn học không gắn cứng với 1 ngành — để phân bổ môn theo từng ngành và kỳ học, vào mục
+        Mỗi môn học gắn trực tiếp với 1 ngành cụ thể (mã môn bắt buộc, duy nhất toàn hệ thống) — có thể
+        trùng tên giữa các ngành khác nhau. Để phân bổ môn vào từng kỳ học của ngành, vào mục
         "Khung chương trình đào tạo".
       </p>
 
       <div className="filter-bar">
+        <select value={trainingModeFilter} onChange={(e) => handleTrainingModeFilterChange(e.target.value)}>
+          <option value="">-- Tất cả hệ đào tạo --</option>
+          <option value="CQ">Chính quy (CQ)</option>
+          <option value="LT">Liên thông (LT)</option>
+        </select>
+        <select value={majorFilter} onChange={(e) => setMajorFilter(e.target.value)}>
+          <option value="">-- Tất cả ngành --</option>
+          {filteredMajorsForFilter.map((m) => <option key={m.MajorId} value={m.MajorId}>{m.MajorName}</option>)}
+        </select>
+        <select value={facultyFilter} onChange={(e) => setFacultyFilter(e.target.value)}>
+          <option value="">-- Tất cả khoa --</option>
+          {faculties.map((f) => <option key={f.FacultyId} value={f.FacultyId}>{f.FacultyName}</option>)}
+        </select>
         <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as "" | "true" | "false")}>
-          <option value="">-- Tất cả --</option>
+          <option value="">-- Tất cả trạng thái --</option>
           <option value="true">Đang sử dụng</option>
           <option value="false">Ngừng sử dụng</option>
         </select>
@@ -317,9 +354,9 @@ export default function Subjects() {
       {showImport && (
         <div className="inline-form items-start flex-col">
           <p className="hint">
-            Môn học được kiểm tra trùng theo TÊN đã chuẩn hóa (không phân biệt hoa/thường, khoảng trắng
-            thừa quanh dấu gạch ngang) — dòng nào trùng với môn đã có sẽ hỏi rõ trước khi nhập, không tự
-            động gộp hay bỏ qua.
+            Mỗi dòng là 1 môn học gắn với đúng 1 Ngành (cột "Ngành", khớp theo tên đã chuẩn hóa) — Mã môn
+            bắt buộc và phải duy nhất toàn hệ thống; trùng tên giữa các ngành khác nhau là bình thường,
+            không bị chặn hay hỏi gộp. Dòng nào mã đã tồn tại sẽ báo lỗi rõ ràng, không tự tạo trùng.
           </p>
           <input type="file" accept=".xlsx,.xls" onChange={handleFile} />
 
@@ -331,9 +368,8 @@ export default function Subjects() {
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th></th><th>Dòng</th><th>Mã môn</th><th>Tên môn</th><th>Khoa</th>
-                    <th>Tín chỉ</th><th>LT</th><th>TH</th><th>Thi</th><th>Phân loại</th>
-                    <th>Trùng tên?</th><th>Trạng thái</th>
+                    <th></th><th>Dòng</th><th>Mã môn</th><th>Tên môn</th><th>Ngành</th><th>Khoa</th>
+                    <th>Tín chỉ</th><th>LT</th><th>TH</th><th>Thi</th><th>Phân loại</th><th>Trạng thái</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -346,40 +382,13 @@ export default function Subjects() {
                       <td>{r.rowNum}</td>
                       <td>{r.subjectCode}</td>
                       <td>{r.subjectName}</td>
+                      <td>{r.majorRaw}</td>
                       <td>{r.facultyRaw}</td>
                       <td>{r.credits}</td>
                       <td>{r.theoryHours}</td>
                       <td>{r.practiceHours}</td>
                       <td>{r.examHours}</td>
                       <td>{r.category}</td>
-                      <td>
-                        {r.duplicateOf ? (
-                          <div className="text-[13px]">
-                            <div className="hint mt-0">
-                              Đã có: <b>{r.duplicateOf.SubjectName}</b> ({r.duplicateOf.FacultyName || "chưa gán khoa"})
-                            </div>
-                            <label className="flex items-center gap-1">
-                              <input type="radio" name={`dup-${r.rowNum}`} checked={r.resolution === "use-existing"}
-                                onChange={() => setRowResolution(r.rowNum, "use-existing")} />
-                              Dùng chung
-                            </label>
-                            <label className="flex items-center gap-1">
-                              <input type="radio" name={`dup-${r.rowNum}`} checked={r.resolution === "create-new"}
-                                onChange={() => setRowResolution(r.rowNum, "create-new")} />
-                              Đây là môn khác, tạo mới
-                            </label>
-                            {r.resolution === "create-new" && (
-                              <>
-                                <input value={r.newName} onChange={(e) => setRowNewName(r.rowNum, e.target.value)}
-                                  placeholder="Tên môn mới" className="mt-1 w-full" />
-                                {isUnresolvedDuplicate(r, items) && (
-                                  <div className="error-text mt-0">Tên này vẫn trùng — đổi tên khác</div>
-                                )}
-                              </>
-                            )}
-                          </div>
-                        ) : "—"}
-                      </td>
                       <td>
                         {r.error
                           ? <span className="error-text mt-0" title={r.errorDetail}>{r.error}</span>
@@ -390,11 +399,7 @@ export default function Subjects() {
                 </tbody>
               </table>
               <div className="flex gap-2 mt-3">
-                <button
-                  type="button"
-                  disabled={selectedCount === 0 || importing || importRows.some((r) => r.selected && isUnresolvedDuplicate(r, items))}
-                  onClick={handleConfirmImport}
-                >
+                <button type="button" disabled={selectedCount === 0 || importing} onClick={handleConfirmImport}>
                   {importing ? "Đang nhập..." : `Xác nhận nhập (${selectedCount})`}
                 </button>
                 <button type="button" onClick={closeImport}>Hủy</button>
@@ -405,15 +410,8 @@ export default function Subjects() {
           {importResult && (
             <div className="mt-3">
               <p className="hint">
-                Đã nhập thành công {importResult.successCount} dòng
-                {(importResult.skippedCount ?? 0) > 0 && `, bỏ qua ${importResult.skippedCount} dòng đã tồn tại`}
-                , lỗi {importResult.errorCount} dòng.
+                Đã nhập thành công {importResult.successCount} dòng, lỗi {importResult.errorCount} dòng.
               </p>
-              {importSkippedDetails.length > 0 && (
-                <ul className="text-[13px] text-gray-500 list-disc pl-5">
-                  {importSkippedDetails.map((msg, i) => <li key={i}>{msg}</li>)}
-                </ul>
-              )}
               {importResultDetails.length > 0 && (
                 <ul className="text-[13px] text-danger list-disc pl-5">
                   {importResultDetails.map((msg, i) => <li key={i}>{msg}</li>)}
@@ -427,9 +425,13 @@ export default function Subjects() {
 
       <form className="inline-form" onSubmit={handleSubmit}>
         <input placeholder="Mã môn" value={form.subjectCode}
-          onChange={(e) => setForm({ ...form, subjectCode: e.target.value })} />
+          onChange={(e) => setForm({ ...form, subjectCode: e.target.value })} required />
         <input placeholder="Tên môn học" value={form.subjectName}
           onChange={(e) => setForm({ ...form, subjectName: e.target.value })} required />
+        <select value={form.majorId} onChange={(e) => setForm({ ...form, majorId: e.target.value })} required>
+          <option value="">-- Chọn ngành --</option>
+          {majors.map((m) => <option key={m.MajorId} value={m.MajorId}>{m.MajorName}</option>)}
+        </select>
         <select value={form.facultyId} onChange={(e) => setForm({ ...form, facultyId: e.target.value })}>
           <option value="">-- Khoa phụ trách --</option>
           {faculties.map((f) => <option key={f.FacultyId} value={f.FacultyId}>{f.FacultyName}</option>)}
@@ -455,7 +457,7 @@ export default function Subjects() {
       <table className="data-table">
         <thead>
           <tr>
-            <th>#</th><th>Mã môn</th><th>Tên môn</th><th>Khoa</th><th>Tín chỉ</th>
+            <th>#</th><th>Mã môn</th><th>Tên môn</th><th>Ngành</th><th>Khoa</th><th>Tín chỉ</th>
             <th>LT</th><th>TH</th><th>Thi</th><th></th>
           </tr>
         </thead>
@@ -470,6 +472,7 @@ export default function Subjects() {
                   <span className="ml-1.5 text-[11px] px-1.5 py-0.5 rounded bg-gray-200 text-gray-600">Ngừng dùng</span>
                 )}
               </td>
+              <td>{it.MajorName}</td>
               <td>{it.FacultyName}</td>
               <td>{it.Credits}</td>
               <td>{it.TheoryHours}</td>
