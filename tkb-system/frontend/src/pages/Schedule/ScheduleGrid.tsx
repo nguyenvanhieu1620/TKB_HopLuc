@@ -5,6 +5,7 @@ import { ScheduleItem, Semester, SchoolClass, Subject, Room, Teacher, Session, S
 import { AxiosError } from "axios";
 import { addDays, colorForId, findTodayWeekIndex, getWeeksInSemester, parseDateKey, startOfWeek, toDateKey, WEEKDAY_LABELS } from "../../../utils/calendar";
 import { buildWorkbook, downloadWorkbook } from "../../../utils/excel";
+import { subjectLabel } from "../../../utils/text";
 
 interface ScheduleForm {
   semesterId: string;
@@ -177,6 +178,21 @@ export default function ScheduleGrid() {
   const selectedGroupClass = useMemo(
     () => classes.find((c) => String(c.ClassId) === groupForm.classId) || null,
     [classes, groupForm.classId]
+  );
+
+  // Việc AR: mỗi Lớp thuộc 1 Ngành cố định — chỉ hiện các môn của đúng Ngành đó trong dropdown
+  // chọn môn (khi chưa chọn Lớp thì hiện tất cả để không chặn luồng thao tác).
+  const formSubjects = useMemo(
+    () => (selectedFormClass ? subjects.filter((s) => s.MajorId === selectedFormClass.MajorId) : subjects),
+    [subjects, selectedFormClass]
+  );
+  const mergeSubjects = useMemo(
+    () => (selectedMergeClasses[0] ? subjects.filter((s) => s.MajorId === selectedMergeClasses[0].MajorId) : subjects),
+    [subjects, selectedMergeClasses]
+  );
+  const groupSubjects = useMemo(
+    () => (selectedGroupClass ? subjects.filter((s) => s.MajorId === selectedGroupClass.MajorId) : subjects),
+    [subjects, selectedGroupClass]
   );
 
   // Gợi ý tách nhóm: sĩ số lớp vượt giới hạn/ca của loại phòng đang chọn ở form xếp lịch thường.
@@ -590,7 +606,7 @@ export default function ScheduleGrid() {
             </select>
             <select value={form.subjectId} onChange={(e) => setForm({ ...form, subjectId: e.target.value })} required>
               <option value="">Môn học</option>
-              {subjects.map((s) => <option key={s.SubjectId} value={s.SubjectId}>{s.SubjectName}</option>)}
+              {formSubjects.map((s) => <option key={s.SubjectId} value={s.SubjectId}>{subjectLabel(s)}</option>)}
             </select>
             <div>
               <select value={form.roomId} onChange={(e) => setForm({ ...form, roomId: e.target.value })} required>
@@ -660,7 +676,7 @@ export default function ScheduleGrid() {
             </div>
             <select value={mergeForm.subjectId} onChange={(e) => setMergeForm({ ...mergeForm, subjectId: e.target.value })} required>
               <option value="">Môn học</option>
-              {subjects.map((s) => <option key={s.SubjectId} value={s.SubjectId}>{s.SubjectName}</option>)}
+              {mergeSubjects.map((s) => <option key={s.SubjectId} value={s.SubjectId}>{subjectLabel(s)}</option>)}
             </select>
             <select value={mergeForm.roomId} onChange={(e) => setMergeForm({ ...mergeForm, roomId: e.target.value })} required>
               <option value="">Phòng</option>
@@ -714,7 +730,7 @@ export default function ScheduleGrid() {
             </select>
             <select value={groupForm.subjectId} onChange={(e) => setGroupForm({ ...groupForm, subjectId: e.target.value })} required>
               <option value="">Môn học</option>
-              {subjects.map((s) => <option key={s.SubjectId} value={s.SubjectId}>{s.SubjectName}</option>)}
+              {groupSubjects.map((s) => <option key={s.SubjectId} value={s.SubjectId}>{subjectLabel(s)}</option>)}
             </select>
             <input type="date" value={groupForm.scheduleDate}
               onChange={(e) => setGroupForm({ ...groupForm, scheduleDate: e.target.value })} required />

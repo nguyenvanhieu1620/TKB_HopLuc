@@ -3,6 +3,7 @@ import axiosClient from "../../api/axiosClient";
 import { Teacher, TeacherDetail, Faculty, Position, Subject, TeacherUnavailability, BulkImportResult, ApiErrorResponse } from "../../types";
 import { AxiosError } from "axios";
 import { readWorkbook, sheetToRows, buildWorkbook, downloadWorkbook } from "../../../utils/excel";
+import { subjectLabel } from "../../../utils/text";
 
 interface TeacherForm {
   fullName: string;
@@ -347,7 +348,7 @@ export default function Teachers() {
             onChange={(e) => setForm({ ...form, subjectIds: [...e.target.selectedOptions].map((o) => o.value) })}>
             {selectableSubjects.map((s) => (
               <option key={s.SubjectId} value={s.SubjectId}>
-                {s.SubjectName}{!s.IsActive ? " (Ngừng dùng)" : ""}
+                {subjectLabel(s)}{!s.IsActive ? " (Ngừng dùng)" : ""}
               </option>
             ))}
           </select>

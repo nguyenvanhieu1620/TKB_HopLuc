@@ -9,3 +9,11 @@ export function normalizeText(s: string): string {
     .replace(/\s+/g, " ")
     .replace(/\s*[-–—]\s*/g, " - ");
 }
+
+// Việc AR: nhãn hiển thị thống nhất cho Môn học ở mọi nơi chọn môn (dropdown/multi-select), để
+// phân biệt các môn trùng tên giữa các Ngành khác nhau — vd "Toán cao cấp (D08 - Dược)". Bỏ phần
+// mã/ngành nếu dữ liệu cũ chưa gán (không hiện dấu ngoặc rỗng).
+export function subjectLabel(s: { SubjectName: string; SubjectCode?: string | null; MajorName?: string | null }): string {
+  const parts = [s.SubjectCode?.trim(), s.MajorName?.trim()].filter((p): p is string => !!p);
+  return parts.length > 0 ? `${s.SubjectName} (${parts.join(" - ")})` : s.SubjectName;
+}

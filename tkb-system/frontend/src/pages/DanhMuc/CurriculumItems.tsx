@@ -3,7 +3,7 @@ import axiosClient from "../../api/axiosClient";
 import { CurriculumItem, Major, Subject, Cohort, BulkImportResult, ApiErrorResponse } from "../../types";
 import { AxiosError } from "axios";
 import { readWorkbook, sheetToRows, buildWorkbook, downloadWorkbook } from "../../../utils/excel";
-import { normalizeText } from "../../../utils/text";
+import { normalizeText, subjectLabel } from "../../../utils/text";
 
 interface ItemForm {
   subjectId: string;
@@ -143,10 +143,18 @@ export default function CurriculumItems() {
   // Môn "Ngừng sử dụng" bị ẩn khỏi dropdown "thêm mới", nhưng nếu dòng đang sửa dùng đúng môn đó
   // (kể cả đã ngừng dùng) vẫn phải hiện, không được làm mất lựa chọn cũ. Danh sách subjects đầy đủ
   // (không lọc) vẫn cần giữ nguyên cho việc so trùng tên khi Import Excel.
-  const selectableSubjects = useMemo(
-    () => subjects.filter((s) => s.IsActive || String(s.SubjectId) === form.subjectId),
-    [subjects, form.subjectId]
-  );
+  // Việc AR: ưu tiên sắp xếp lên đầu các môn thuộc đúng Ngành đang chọn ở filter — không lọc
+  // cứng, vì về nguyên tắc 1 môn của ngành khác vẫn có thể hợp lệ trong khung chương trình.
+  const selectableSubjects = useMemo(() => {
+    const filtered = subjects.filter((s) => s.IsActive || String(s.SubjectId) === form.subjectId);
+    const currentMajorId = majorId ? Number(majorId) : null;
+    if (!currentMajorId) return filtered;
+    return [...filtered].sort((a, b) => {
+      const aMatch = a.MajorId === currentMajorId ? 0 : 1;
+      const bMatch = b.MajorId === currentMajorId ? 0 : 1;
+      return aMatch - bMatch;
+    });
+  }, [subjects, form.subjectId, majorId]);
 
   async function loadLookups() {
     const [majorRes, subjectRes, cohortRes] = await Promise.all([
@@ -508,7 +516,7 @@ export default function CurriculumItems() {
             <option value="">-- Chọn môn học --</option>
             {selectableSubjects.map((s) => (
               <option key={s.SubjectId} value={s.SubjectId}>
-                {s.SubjectName}{!s.IsActive ? " (Ngừng dùng)" : ""}
+                {subjectLabel(s)}{!s.IsActive ? " (Ngừng dùng)" : ""}
               </option>
             ))}
           </select>

@@ -1,8 +1,9 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import axiosClient from "../../api/axiosClient";
 import { useAuth } from "../../context/AuthContext";
 import { ExamItem, ExamType, Semester, SchoolClass, Subject, Room, Teacher, Session, SchedulingPolicyItem, ApiErrorResponse } from "../../types";
 import { AxiosError } from "axios";
+import { subjectLabel } from "../../../utils/text";
 
 const EXAM_TYPES: { value: ExamType; label: string }[] = [
   { value: "TuLuan", label: "Tự luận" },
@@ -79,6 +80,17 @@ export default function ExamList() {
   useEffect(() => { loadExams(); }, [filters]);
   useEffect(() => { loadSemestersFor(filters.classId).then(setSemesters); }, [filters.classId]);
   useEffect(() => { loadSemestersFor(form.classId).then(setFormSemesters); }, [form.classId]);
+
+  // Việc AR: mỗi Lớp thuộc 1 Ngành cố định — chỉ hiện các môn của đúng Ngành đó trong dropdown
+  // chọn môn thi (khi chưa chọn Lớp thì hiện tất cả để không chặn luồng thao tác).
+  const selectedFormClass = useMemo(
+    () => classes.find((c) => String(c.ClassId) === form.classId) || null,
+    [classes, form.classId]
+  );
+  const formSubjects = useMemo(
+    () => (selectedFormClass ? subjects.filter((s) => s.MajorId === selectedFormClass.MajorId) : subjects),
+    [subjects, selectedFormClass]
+  );
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -161,7 +173,7 @@ export default function ExamList() {
             </select>
             <select value={form.subjectId} onChange={(e) => setForm({ ...form, subjectId: e.target.value })} required>
               <option value="">Môn thi</option>
-              {subjects.map((s) => <option key={s.SubjectId} value={s.SubjectId}>{s.SubjectName}</option>)}
+              {formSubjects.map((s) => <option key={s.SubjectId} value={s.SubjectId}>{subjectLabel(s)}</option>)}
             </select>
             <select value={form.roomId} onChange={(e) => setForm({ ...form, roomId: e.target.value })} required>
               <option value="">Phòng thi</option>
