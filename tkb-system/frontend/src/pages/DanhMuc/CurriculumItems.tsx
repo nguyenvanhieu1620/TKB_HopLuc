@@ -465,29 +465,64 @@ export default function CurriculumItems() {
 
       {Object.entries(itemsByTerm)
         .sort(([a], [b]) => Number(a) - Number(b))
-        .map(([term, rows]) => (
-          <div key={term} className="mb-5">
-            <h3 className="text-brand text-sm font-semibold mb-2">Kỳ {term}</h3>
-            <table className="data-table">
-              <thead><tr><th>#</th><th>Môn học</th><th>Mã môn</th><th>Khóa</th><th>Tín chỉ</th><th></th></tr></thead>
-              <tbody>
-                {rows.map((it, idx) => (
-                  <tr key={it.CurriculumItemId}>
-                    <td>{idx + 1}</td>
-                    <td>{it.SubjectName}</td>
-                    <td>{it.SubjectCode}</td>
-                    <td>{it.CohortName || "Tất cả"}</td>
-                    <td>{it.Credits}</td>
-                    <td>
-                      <button onClick={() => handleEdit(it)}>Sửa</button>
-                      <button onClick={() => handleDelete(it.CurriculumItemId)}>Xóa</button>
-                    </td>
+        .map(([term, rows]) => {
+          const totals = rows.reduce(
+            (acc, it) => ({
+              credits: acc.credits + (it.Credits ?? 0),
+              totalHours: acc.totalHours + (it.TotalHours ?? 0),
+              theoryHours: acc.theoryHours + (it.TheoryHours ?? 0),
+              practiceHours: acc.practiceHours + (it.PracticeHours ?? 0),
+              examHours: acc.examHours + (it.ExamHours ?? 0),
+            }),
+            { credits: 0, totalHours: 0, theoryHours: 0, practiceHours: 0, examHours: 0 }
+          );
+          return (
+            <div key={term} className="mb-5">
+              <h3 className="text-brand text-sm font-semibold mb-2">Kỳ {term}</h3>
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>#</th><th>Môn học</th><th>Mã môn</th><th>Khóa</th><th>Tín chỉ</th>
+                    <th>Tổng giờ</th><th>LT</th><th>TH</th><th>Thi</th><th></th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ))}
+                </thead>
+                <tbody>
+                  {rows.map((it, idx) => (
+                    <tr key={it.CurriculumItemId}>
+                      <td>{idx + 1}</td>
+                      <td>{it.SubjectName}</td>
+                      <td>{it.SubjectCode}</td>
+                      <td>{it.CohortName || "Tất cả"}</td>
+                      <td>{it.Credits}</td>
+                      <td>{it.TotalHours}</td>
+                      <td>{it.TheoryHours}</td>
+                      <td>{it.PracticeHours}</td>
+                      <td>{it.ExamHours}</td>
+                      <td>
+                        <button onClick={() => handleEdit(it)}>Sửa</button>
+                        <button onClick={() => handleDelete(it.CurriculumItemId)}>Xóa</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr className="font-semibold bg-gray-50">
+                    <td></td>
+                    <td>Tổng cộng</td>
+                    <td></td>
+                    <td></td>
+                    <td>{totals.credits}</td>
+                    <td>{totals.totalHours}</td>
+                    <td>{totals.theoryHours}</td>
+                    <td>{totals.practiceHours}</td>
+                    <td>{totals.examHours}</td>
+                    <td></td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          );
+        })}
     </div>
   );
 }
