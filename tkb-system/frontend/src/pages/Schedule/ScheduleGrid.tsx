@@ -194,7 +194,7 @@ export default function ScheduleGrid() {
   async function loadLookups() {
     const [cls, subj, room, tch, ses, policy] = await Promise.all([
       axiosClient.get<SchoolClass[]>("/classes"),
-      axiosClient.get<Subject[]>("/subjects"),
+      axiosClient.get<Subject[]>("/subjects", { params: { isActive: true } }),
       axiosClient.get<Room[]>("/rooms"),
       axiosClient.get<Teacher[]>("/teachers"),
       axiosClient.get<Session[]>("/sessions"),

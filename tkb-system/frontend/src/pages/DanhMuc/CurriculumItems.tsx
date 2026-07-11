@@ -140,6 +140,14 @@ export default function CurriculumItems() {
   const [importResult, setImportResult] = useState<BulkImportResult | null>(null);
   const [importResultDetails, setImportResultDetails] = useState<string[]>([]);
 
+  // Môn "Ngừng sử dụng" bị ẩn khỏi dropdown "thêm mới", nhưng nếu dòng đang sửa dùng đúng môn đó
+  // (kể cả đã ngừng dùng) vẫn phải hiện, không được làm mất lựa chọn cũ. Danh sách subjects đầy đủ
+  // (không lọc) vẫn cần giữ nguyên cho việc so trùng tên khi Import Excel.
+  const selectableSubjects = useMemo(
+    () => subjects.filter((s) => s.IsActive || String(s.SubjectId) === form.subjectId),
+    [subjects, form.subjectId]
+  );
+
   async function loadLookups() {
     const [majorRes, subjectRes, cohortRes] = await Promise.all([
       axiosClient.get<Major[]>("/majors"),
@@ -498,7 +506,11 @@ export default function CurriculumItems() {
           <select value={form.subjectId} onChange={(e) => setForm({ ...form, subjectId: e.target.value })}
             required disabled={!!editingId}>
             <option value="">-- Chọn môn học --</option>
-            {subjects.map((s) => <option key={s.SubjectId} value={s.SubjectId}>{s.SubjectName}</option>)}
+            {selectableSubjects.map((s) => (
+              <option key={s.SubjectId} value={s.SubjectId}>
+                {s.SubjectName}{!s.IsActive ? " (Ngừng dùng)" : ""}
+              </option>
+            ))}
           </select>
           <input type="number" placeholder="Kỳ thứ mấy" min={1} value={form.termNumber}
             onChange={(e) => setForm({ ...form, termNumber: e.target.value })} required />

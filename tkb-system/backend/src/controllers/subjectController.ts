@@ -40,12 +40,18 @@ interface SubjectBulkResult {
 
 export async function list(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   try {
+    const { isActive } = req.query as Record<string, string | undefined>;
     const pool = await getPool();
+    let where = "";
+    if (isActive === "true") where = "WHERE sub.IsActive = 1";
+    else if (isActive === "false") where = "WHERE sub.IsActive = 0";
+
     const result = await pool.request().query(`
       SELECT sub.SubjectId, sub.SubjectCode, sub.SubjectName, sub.FacultyId, f.FacultyName,
              sub.Credits, sub.TheoryHours, sub.PracticeHours, sub.ExamHours, sub.IsActive
       FROM Subjects sub
       LEFT JOIN Faculties f ON f.FacultyId = sub.FacultyId
+      ${where}
       ORDER BY sub.SubjectName
     `);
     res.json(result.recordset);

@@ -1,4 +1,4 @@
-import { ChangeEvent, FormEvent, useEffect, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
 import axiosClient from "../../api/axiosClient";
 import { Subject, Faculty, BulkImportResult, ApiErrorResponse } from "../../types";
 import { AxiosError } from "axios";
@@ -13,10 +13,12 @@ interface SubjectForm {
   theoryHours: string;
   practiceHours: string;
   examHours: string;
+  isActive: boolean;
 }
 
 const emptyForm: SubjectForm = {
   subjectCode: "", subjectName: "", facultyId: "", credits: "", theoryHours: "", practiceHours: "", examHours: "",
+  isActive: true,
 };
 
 interface ExcelSubjectRow {
@@ -104,6 +106,7 @@ export default function Subjects() {
   const [form, setForm] = useState<SubjectForm>(emptyForm);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [error, setError] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"" | "true" | "false">("");
 
   const [showImport, setShowImport] = useState(false);
   const [importRows, setImportRows] = useState<ImportRow[]>([]);
@@ -138,10 +141,11 @@ export default function Subjects() {
       theoryHours: Number(form.theoryHours) || 0,
       practiceHours: Number(form.practiceHours) || 0,
       examHours: Number(form.examHours) || 0,
+      isActive: form.isActive,
     };
     try {
       if (editingId) {
-        await axiosClient.put(`/subjects/${editingId}`, { ...payload, isActive: true });
+        await axiosClient.put(`/subjects/${editingId}`, payload);
       } else {
         await axiosClient.post("/subjects", payload);
       }
@@ -163,6 +167,7 @@ export default function Subjects() {
       theoryHours: String(item.TheoryHours),
       practiceHours: String(item.PracticeHours),
       examHours: String(item.ExamHours),
+      isActive: item.IsActive,
     });
   }
 
@@ -283,6 +288,12 @@ export default function Subjects() {
   const validCount = importRows.filter((r) => !r.error).length;
   const selectedCount = importRows.filter((r) => r.selected && !r.error).length;
 
+  const filteredItems = useMemo(() => {
+    if (statusFilter === "") return items;
+    const wantActive = statusFilter === "true";
+    return items.filter((s) => s.IsActive === wantActive);
+  }, [items, statusFilter]);
+
   return (
     <div>
       <h1>Quản lý Môn học</h1>
@@ -292,6 +303,11 @@ export default function Subjects() {
       </p>
 
       <div className="filter-bar">
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as "" | "true" | "false")}>
+          <option value="">-- Tất cả --</option>
+          <option value="true">Đang sử dụng</option>
+          <option value="false">Ngừng sử dụng</option>
+        </select>
         <button type="button" onClick={() => setShowImport((v) => !v)}>
           {showImport ? "Đóng nhập Excel" : "Nhập từ Excel"}
         </button>
@@ -426,6 +442,11 @@ export default function Subjects() {
           onChange={(e) => setForm({ ...form, practiceHours: e.target.value })} />
         <input type="number" placeholder="Giờ thi/kiểm tra" value={form.examHours}
           onChange={(e) => setForm({ ...form, examHours: e.target.value })} />
+        <label className="flex items-center gap-2">
+          <input type="checkbox" checked={form.isActive}
+            onChange={(e) => setForm({ ...form, isActive: e.target.checked })} />
+          Đang sử dụng
+        </label>
         <button type="submit">{editingId ? "Cập nhật" : "Thêm mới"}</button>
         {editingId && <button type="button" onClick={resetForm}>Hủy</button>}
       </form>
@@ -439,11 +460,16 @@ export default function Subjects() {
           </tr>
         </thead>
         <tbody>
-          {items.map((it, idx) => (
-            <tr key={it.SubjectId}>
+          {filteredItems.map((it, idx) => (
+            <tr key={it.SubjectId} className={it.IsActive ? "" : "opacity-50"}>
               <td>{idx + 1}</td>
               <td>{it.SubjectCode}</td>
-              <td>{it.SubjectName}</td>
+              <td>
+                {it.SubjectName}
+                {!it.IsActive && (
+                  <span className="ml-1.5 text-[11px] px-1.5 py-0.5 rounded bg-gray-200 text-gray-600">Ngừng dùng</span>
+                )}
+              </td>
               <td>{it.FacultyName}</td>
               <td>{it.Credits}</td>
               <td>{it.TheoryHours}</td>

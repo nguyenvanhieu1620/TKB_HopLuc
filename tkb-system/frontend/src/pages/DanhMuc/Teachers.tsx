@@ -1,4 +1,4 @@
-import { ChangeEvent, FormEvent, useEffect, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
 import axiosClient from "../../api/axiosClient";
 import { Teacher, TeacherDetail, Faculty, Position, Subject, TeacherUnavailability, BulkImportResult, ApiErrorResponse } from "../../types";
 import { AxiosError } from "axios";
@@ -78,6 +78,13 @@ export default function Teachers() {
   const [unavailItems, setUnavailItems] = useState<TeacherUnavailability[]>([]);
   const [unavailForm, setUnavailForm] = useState({ teacherId: "", dateFrom: "", dateTo: "", reason: "" });
   const [unavailError, setUnavailError] = useState("");
+
+  // Môn "Ngừng sử dụng" bị ẩn khỏi lựa chọn CHỌN THÊM mới, nhưng môn đã được gán sẵn cho GV đang
+  // sửa (kể cả khi đã ngừng dùng) vẫn phải hiện trong danh sách, không được làm mất lựa chọn cũ.
+  const selectableSubjects = useMemo(
+    () => subjects.filter((s) => s.IsActive || form.subjectIds.includes(String(s.SubjectId))),
+    [subjects, form.subjectIds]
+  );
 
   async function load() {
     const [teacherRes, facultyRes, positionRes, subjectRes, unavailRes] = await Promise.all([
@@ -338,7 +345,11 @@ export default function Teachers() {
         <div>
           <select multiple value={form.subjectIds} className="w-full"
             onChange={(e) => setForm({ ...form, subjectIds: [...e.target.selectedOptions].map((o) => o.value) })}>
-            {subjects.map((s) => <option key={s.SubjectId} value={s.SubjectId}>{s.SubjectName}</option>)}
+            {selectableSubjects.map((s) => (
+              <option key={s.SubjectId} value={s.SubjectId}>
+                {s.SubjectName}{!s.IsActive ? " (Ngừng dùng)" : ""}
+              </option>
+            ))}
           </select>
           <div className="hint mt-1">Môn có thể dạy — giữ Ctrl (Windows) / Cmd (Mac) để chọn nhiều môn</div>
         </div>
