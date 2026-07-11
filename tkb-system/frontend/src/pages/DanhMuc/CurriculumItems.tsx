@@ -108,6 +108,7 @@ export default function CurriculumItems() {
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [cohorts, setCohorts] = useState<Cohort[]>([]);
   const [trainingModeFilter, setTrainingModeFilter] = useState("");
+  const [cohortFilter, setCohortFilter] = useState("");
   const [majorId, setMajorId] = useState("");
   const [items, setItems] = useState<CurriculumItem[]>([]);
   const [form, setForm] = useState<ItemForm>(emptyForm);
@@ -151,10 +152,12 @@ export default function CurriculumItems() {
       setItems([]);
       return;
     }
-    const res = await axiosClient.get<CurriculumItem[]>("/curriculum-items", { params: { majorId } });
+    const params: Record<string, string> = { majorId };
+    if (cohortFilter) params.cohortId = cohortFilter;
+    const res = await axiosClient.get<CurriculumItem[]>("/curriculum-items", { params });
     setItems(res.data);
   }
-  useEffect(() => { loadItems(); }, [majorId]);
+  useEffect(() => { loadItems(); }, [majorId, cohortFilter]);
 
   function resetForm() {
     setForm(emptyForm);
@@ -327,6 +330,10 @@ export default function CurriculumItems() {
           <option value="">-- Tất cả hệ đào tạo --</option>
           <option value="CQ">Chính quy (CQ)</option>
           <option value="LT">Liên thông (LT)</option>
+        </select>
+        <select value={cohortFilter} onChange={(e) => setCohortFilter(e.target.value)}>
+          <option value="">-- Tất cả các khóa --</option>
+          {cohorts.map((c) => <option key={c.CohortId} value={c.CohortId}>{c.CohortName}</option>)}
         </select>
         <select value={majorId} onChange={(e) => { setMajorId(e.target.value); resetForm(); }}>
           {filteredMajors.length === 0 && <option value="">-- Không có ngành nào --</option>}

@@ -32,7 +32,7 @@ interface BulkCurriculumRow {
 
 export async function list(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { majorId } = req.query as Record<string, string | undefined>;
+    const { majorId, cohortId } = req.query as Record<string, string | undefined>;
     const pool = await getPool();
     const request = pool.request();
     let where = "WHERE 1=1";
@@ -40,6 +40,42 @@ export async function list(req: AuthRequest, res: Response, next: NextFunction):
       request.input("majorId", sql.Int, majorId);
       where += " AND ci.MajorId = @majorId";
     }
+
+    // Có lọc theo Khóa: 1 môn/kỳ có thể có 1 dòng áp dụng chung (CohortId NULL) và 1 dòng ghi đè
+    // riêng cho đúng khóa đang xem — chỉ lấy 1 trong 2 (ưu tiên dòng ghi đè riêng nếu có) để không
+    // hiện đúp cùng 1 môn 2 lần trong bảng khung chương trình của khóa đó.
+    if (cohortId) {
+      request.input("cohortId", sql.Int, cohortId);
+      where += " AND (ci.CohortId = @cohortId OR ci.CohortId IS NULL)";
+
+      const result = await request.query(`
+        WITH ranked AS (
+          SELECT ci.*,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY ci.SubjectId, ci.TermNumber
+                   ORDER BY CASE WHEN ci.CohortId = @cohortId THEN 0 ELSE 1 END
+                 ) AS rn
+          FROM CurriculumItems ci
+          ${where}
+        )
+        SELECT ci.CurriculumItemId, ci.MajorId, m.MajorName, ci.SubjectId, sub.SubjectName, sub.SubjectCode,
+               ci.CohortId, co.CohortName, ci.TermNumber, COALESCE(ci.Credits, sub.Credits) AS Credits,
+               COALESCE(ci.TotalHours, sub.TheoryHours + sub.PracticeHours + sub.ExamHours) AS TotalHours,
+               COALESCE(ci.TheoryHours, sub.TheoryHours) AS TheoryHours,
+               COALESCE(ci.PracticeHours, sub.PracticeHours) AS PracticeHours,
+               COALESCE(ci.ExamHours, sub.ExamHours) AS ExamHours,
+               ci.SortOrder, ci.IsActive
+        FROM ranked ci
+        INNER JOIN Majors m ON m.MajorId = ci.MajorId
+        INNER JOIN Subjects sub ON sub.SubjectId = ci.SubjectId
+        LEFT JOIN Cohorts co ON co.CohortId = ci.CohortId
+        WHERE ci.rn = 1
+        ORDER BY m.MajorName, ci.TermNumber, ci.SortOrder
+      `);
+      res.json(result.recordset);
+      return;
+    }
+
     const result = await request.query(`
       SELECT ci.CurriculumItemId, ci.MajorId, m.MajorName, ci.SubjectId, sub.SubjectName, sub.SubjectCode,
              ci.CohortId, co.CohortName, ci.TermNumber, COALESCE(ci.Credits, sub.Credits) AS Credits,
