@@ -3,7 +3,7 @@ import axiosClient from "../../api/axiosClient";
 import { useAuth } from "../../context/AuthContext";
 import { ScheduleItem, ScheduleDetail, SchedulePeriodProgress, Semester, SchoolClass, Subject, Room, Teacher, Session, SchedulingPolicyItem, ApiErrorResponse, CopyWeekResult, CurriculumItem, Cohort } from "../../types";
 import { AxiosError } from "axios";
-import { addDays, addMinutesToTime, colorForId, diffMinutesBetweenTimes, findTodayWeekIndex, getWeeksInSemester, parseDateKey, startOfWeek, toDateKey, WEEKDAY_LABELS } from "../../../utils/calendar";
+import { addDays, addMinutesToTime, colorForId, diffMinutesBetweenTimes, findTodayWeekIndex, getISOWeek, getISOWeekYear, getWeeksInSemester, mondayOfISOWeek, parseDateKey, startOfWeek, toDateKey, WEEKDAY_LABELS } from "../../../utils/calendar";
 import { buildWorkbook, downloadWorkbook } from "../../../utils/excel";
 import { subjectLabel } from "../../../utils/text";
 
@@ -483,6 +483,15 @@ export default function ScheduleGrid() {
     });
     return filtered.length > 0 ? filtered : allClassesDays;
   }, [allClassesDays, allClassesRows, visibleAllClasses]);
+
+  // Nhảy thẳng tới 1 tuần bất kỳ qua chọn Năm + Tuần (ISO) — bấm lùi/tới từng tuần vẫn còn để
+  // tinh chỉnh, nhưng chọn thẳng nhanh hơn nhiều khi cần nhảy xa (vd sang kỳ/năm học khác).
+  const allClassesSelectedYear = getISOWeekYear(allClassesWeekStart);
+  const allClassesSelectedWeek = getISOWeek(allClassesWeekStart);
+  const allClassesYearOptions = useMemo(() => {
+    const thisYear = new Date().getFullYear();
+    return Array.from({ length: 5 }, (_, i) => thisYear - 1 + i);
+  }, []);
 
   function goCurrentWeek() {
     const todayIdx = findTodayWeekIndex(semesterWeeks);
@@ -1328,11 +1337,23 @@ export default function ScheduleGrid() {
             <div className="calendar-toolbar">
               <div className="calendar-nav">
                 <button type="button" onClick={() => setAllClassesWeekStart((d) => addDays(d, -7))}>‹</button>
-                <span className="calendar-title">
-                  Tuần từ {fmtDDMMYYYY(allClassesWeekStart)} - {fmtDDMMYYYY(addDays(allClassesWeekStart, 6))}
-                </span>
+                <select
+                  value={allClassesSelectedYear}
+                  onChange={(e) => setAllClassesWeekStart(mondayOfISOWeek(Number(e.target.value), allClassesSelectedWeek))}
+                >
+                  {allClassesYearOptions.map((y) => <option key={y} value={y}>Năm {y}</option>)}
+                </select>
+                <select
+                  value={allClassesSelectedWeek}
+                  onChange={(e) => setAllClassesWeekStart(mondayOfISOWeek(allClassesSelectedYear, Number(e.target.value)))}
+                >
+                  {Array.from({ length: 53 }, (_, i) => i + 1).map((w) => <option key={w} value={w}>Tuần {w}</option>)}
+                </select>
                 <button type="button" onClick={() => setAllClassesWeekStart((d) => addDays(d, 7))}>›</button>
                 <button type="button" onClick={() => setAllClassesWeekStart(startOfWeek(new Date()))}>Tuần hiện tại</button>
+                <span className="calendar-title">
+                  ({fmtDDMMYYYY(allClassesWeekStart)} - {fmtDDMMYYYY(addDays(allClassesWeekStart, 6))})
+                </span>
               </div>
             </div>
 

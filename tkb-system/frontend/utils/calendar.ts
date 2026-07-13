@@ -73,6 +73,34 @@ export function findTodayWeekIndex(weeks: SemesterWeek[]): number {
   return weeks.findIndex((w) => todayKey >= toDateKey(w.start) && todayKey <= toDateKey(w.end));
 }
 
+// Số tuần ISO-8601 (1-53, tuần chứa Thứ 5 quyết định thuộc năm nào) của 1 ngày — dùng cho chế độ
+// xem "Tất cả các lớp" (điều hướng theo tuần lịch thật, không theo Tuần N của 1 Kỳ) để cho phép
+// chọn thẳng Năm + Tuần thay vì phải bấm lùi/tới từng tuần một.
+export function getISOWeek(date: Date): number {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  return Math.ceil(((d.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
+}
+
+// Năm ISO của 1 ngày — có thể khác năm dương lịch với các ngày đầu/cuối năm (vd 1/1 có thể vẫn
+// thuộc tuần 52/53 của năm trước).
+export function getISOWeekYear(date: Date): number {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  return d.getUTCFullYear();
+}
+
+// Thứ 2 của tuần ISO thứ `week` trong năm `year`.
+export function mondayOfISOWeek(year: number, week: number): Date {
+  const jan4 = new Date(year, 0, 4);
+  const jan4Day = jan4.getDay() || 7;
+  const week1Monday = addDays(jan4, 1 - jan4Day);
+  return addDays(week1Monday, (week - 1) * 7);
+}
+
 // Bảng màu tuần hoàn để tô cho từng môn học (giữ tinh thần từ ứng dụng Excel cũ)
 const PALETTE = [
   { bg: "#e8f5d8", text: "#3a6b1f" },
