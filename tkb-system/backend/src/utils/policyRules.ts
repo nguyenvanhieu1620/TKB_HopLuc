@@ -98,7 +98,12 @@ interface SessionLengthCheckResult {
   message?: string;
 }
 
-// Việc S (1/2): 1 buổi không nên dài quá MaxTheoryHoursPerSession / MaxPracticeHoursPerSession — CẢNH BÁO.
+// Việc S (1/2) + Việc AX (fix đơn vị): 1 buổi không nên dài quá MaxTheoryHoursPerSession /
+// MaxPracticeHoursPerSession — CHẶN CỨNG. So sánh theo TIẾT (không phải giờ đồng hồ thô): trường
+// tính định mức 1 buổi theo số tiết, mà TheoryPeriodMinutes (45p) khác PracticePeriodMinutes
+// (60p) — nếu so bằng giờ thô thì 6 tiết Lý thuyết chỉ = 4.5 giờ, lọt qua giới hạn "5 giờ" dù thực
+// tế đã vượt 5 tiết. Tên policy key giữ nguyên (MaxTheoryHoursPerSession...) để không phải đổi dữ
+// liệu SchedulingPolicy đã có, nhưng giá trị nay được hiểu là SỐ TIẾT tối đa/buổi.
 export async function checkSessionLength({ roomId, startTime, endTime }: SessionLengthCheckParams): Promise<SessionLengthCheckResult> {
   const room = await getRoomInfo(roomId);
   if (!room) return { violated: false };
@@ -106,13 +111,15 @@ export async function checkSessionLength({ roomId, startTime, endTime }: Session
   if (!category) return { violated: false };
 
   const minutes = diffMinutes(startTime, endTime);
-  const maxHoursKey = category === "LyThuyet" ? "MaxTheoryHoursPerSession" : "MaxPracticeHoursPerSession";
-  const maxHours = await getPolicyValue(maxHoursKey);
+  const periodMinutes = await getPeriodMinutes(room.RoomType);
+  const periods = minutes / periodMinutes;
+  const maxPeriodsKey = category === "LyThuyet" ? "MaxTheoryHoursPerSession" : "MaxPracticeHoursPerSession";
+  const maxPeriods = await getPolicyValue(maxPeriodsKey);
 
-  if (minutes > maxHours * 60) {
+  if (periods > maxPeriods) {
     return {
       violated: true,
-      message: `Buổi ${categoryLabel(category)} dài ${(minutes / 60).toFixed(1)} giờ, vượt giới hạn ${maxHours} giờ/buổi`,
+      message: `Buổi ${categoryLabel(category)} dài ${periods.toFixed(1)} tiết, vượt giới hạn ${maxPeriods} tiết/buổi`,
     };
   }
   return { violated: false };
@@ -132,8 +139,9 @@ interface DailyHoursCheckResult {
   message?: string;
 }
 
-// Việc S (2/2): tổng giờ Lý thuyết/Thực hành của 1 Lớp trong 1 NGÀY không quá MaxTheoryHoursPerDay /
-// MaxPracticeHoursPerDay (tính cả các Schedule khác đã có cùng lớp, cùng ngày, cùng loại phòng) — CẢNH BÁO.
+// Việc S (2/2) + Việc AX (fix đơn vị): tổng số TIẾT Lý thuyết/Thực hành của 1 Lớp trong 1 NGÀY
+// không quá MaxTheoryHoursPerDay / MaxPracticeHoursPerDay (tính cả các Schedule khác đã có cùng
+// lớp, cùng ngày, cùng nhóm loại phòng) — CHẶN CỨNG, cùng lý do đổi đơn vị như checkSessionLength.
 export async function checkDailyHoursLimit({
   classId,
   scheduleDate,
@@ -148,7 +156,9 @@ export async function checkDailyHoursLimit({
   const category = classifyRoomCategory(room.RoomType);
   if (!category) return { violated: false };
 
-  const roomTypesInCategory = category === "LyThuyet" ? ["LyThuyet"] : ["ThucHanh", "LamSang"];
+  // Việc AX (fix): trước đây bỏ sót SanBai/Labo khỏi danh sách — 2 loại phòng này không được tính
+  // vào tổng giờ/ngày, để lọt được thêm buổi mà không bị chặn. Đồng bộ với classifyRoomCategory.
+  const roomTypesInCategory = category === "LyThuyet" ? ["LyThuyet", "SanBai"] : ["ThucHanh", "Labo", "LamSang"];
   const pool = await getPool();
   const request = pool
     .request()
@@ -172,16 +182,21 @@ export async function checkDailyHoursLimit({
       AND (@excludeMergedId IS NULL OR s.MergedSessionId IS NULL OR s.MergedSessionId <> @excludeMergedId)
   `);
 
+  // Mọi loại phòng trong CÙNG 1 nhóm (LyThuyet+SanBai hoặc ThucHanh+Labo+LamSang) luôn dùng chung 1
+  // độ dài tiết (getPeriodMinutes nhóm y hệt classifyRoomCategory) nên quy đổi 1 lần theo phòng
+  // hiện tại là đủ, không cần tra riêng từng dòng lịch sử.
+  const periodMinutes = await getPeriodMinutes(room.RoomType);
   const existingMinutes = existingResult.recordset.reduce((sum, r) => sum + diffMinutes(r.StartTime, r.EndTime), 0);
   const totalMinutes = existingMinutes + diffMinutes(startTime, endTime);
+  const totalPeriods = totalMinutes / periodMinutes;
 
-  const maxHoursKey = category === "LyThuyet" ? "MaxTheoryHoursPerDay" : "MaxPracticeHoursPerDay";
-  const maxHours = await getPolicyValue(maxHoursKey);
+  const maxPeriodsKey = category === "LyThuyet" ? "MaxTheoryHoursPerDay" : "MaxPracticeHoursPerDay";
+  const maxPeriods = await getPolicyValue(maxPeriodsKey);
 
-  if (totalMinutes > maxHours * 60) {
+  if (totalPeriods > maxPeriods) {
     return {
       violated: true,
-      message: `Tổng giờ ${categoryLabel(category)} ngày ${scheduleDate} của lớp là ${(totalMinutes / 60).toFixed(1)} giờ, vượt giới hạn ${maxHours} giờ/ngày`,
+      message: `Tổng số tiết ${categoryLabel(category)} ngày ${scheduleDate} của lớp là ${totalPeriods.toFixed(1)} tiết, vượt giới hạn ${maxPeriods} tiết/ngày`,
     };
   }
   return { violated: false };
