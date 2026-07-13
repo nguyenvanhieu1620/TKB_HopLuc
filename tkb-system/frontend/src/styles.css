@@ -94,8 +94,8 @@
   .calendar-grid-empty {
     @apply border-b border-r border-gray-100 h-16 align-top cursor-pointer transition-colors duration-150 hover:bg-brand-light/20;
   }
-  .calendar-grid-event { @apply border-b border-r border-gray-100 relative; }
-  .calendar-grid-event-inner { @apply absolute inset-0 p-1.5 flex flex-col gap-1.5 overflow-auto; }
+  .calendar-grid-event { @apply border-b border-r border-gray-100 align-top; }
+  .calendar-grid-event-inner { @apply p-1.5 flex flex-col gap-1.5; }
 
   .calendar-event-card { @apply rounded-lg p-2 text-xs relative shadow-sm transition-shadow duration-150 hover:shadow-md flex-1 flex flex-col; }
   .calendar-event-title { @apply font-semibold; }
