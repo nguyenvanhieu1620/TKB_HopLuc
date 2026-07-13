@@ -11,6 +11,7 @@ interface ScheduleForm {
   semesterId: string;
   classId: string;
   subjectId: string;
+  sessionType: string;
   roomId: string;
   teacherIds: string[];
   scheduleDate: string;
@@ -21,7 +22,7 @@ interface ScheduleForm {
 }
 
 const emptyForm: ScheduleForm = {
-  semesterId: "", classId: "", subjectId: "", roomId: "",
+  semesterId: "", classId: "", subjectId: "", sessionType: "", roomId: "",
   teacherIds: [], scheduleDate: "", sessionId: "", periodCount: "", note: "", isMakeup: false,
 };
 
@@ -29,6 +30,7 @@ interface MergeForm {
   semesterId: string;
   classIds: string[];
   subjectId: string;
+  sessionType: string;
   roomId: string;
   teacherIds: string[];
   scheduleDate: string;
@@ -39,7 +41,7 @@ interface MergeForm {
 }
 
 const emptyMergeForm: MergeForm = {
-  semesterId: "", classIds: [], subjectId: "", roomId: "",
+  semesterId: "", classIds: [], subjectId: "", sessionType: "", roomId: "",
   teacherIds: [], scheduleDate: "", sessionId: "", periodCount: "", note: "", isMakeup: false,
 };
 
@@ -53,6 +55,7 @@ interface GroupForm {
   semesterId: string;
   classId: string;
   subjectId: string;
+  sessionType: string;
   scheduleDate: string;
   sessionId: string;
   periodCount: string;
@@ -63,7 +66,7 @@ interface GroupForm {
 
 const emptyGroupRow: GroupRow = { groupLabel: "", roomId: "", teacherIds: [] };
 const emptyGroupForm: GroupForm = {
-  semesterId: "", classId: "", subjectId: "", scheduleDate: "", sessionId: "", periodCount: "", note: "", isMakeup: false,
+  semesterId: "", classId: "", subjectId: "", sessionType: "", scheduleDate: "", sessionId: "", periodCount: "", note: "", isMakeup: false,
   groups: [{ ...emptyGroupRow, groupLabel: "Nhóm 1" }, { ...emptyGroupRow, groupLabel: "Nhóm 2" }],
 };
 
@@ -72,6 +75,26 @@ const CAPACITY_POLICY_BY_ROOM_TYPE: Record<string, string> = {
   ThucHanh: "MaxStudentsPerPracticeGroup",
   LamSang: "MaxStudentsPerClinicalGroup",
 };
+
+// Việc AW: ô chọn "Loại buổi học" tường minh thay vì bắt Admin phải đoán qua tên Phòng — dropdown
+// Phòng chỉ hiện đúng các phòng thuộc nhóm RoomType tương ứng loại buổi đã chọn. Gộp SanBai vào
+// nhóm Lý thuyết và Labo vào nhóm Thực hành, đồng bộ với classifyRoomCategory ở backend.
+const SESSION_TYPE_OPTIONS: { value: string; label: string }[] = [
+  { value: "LyThuyet", label: "Lý thuyết" },
+  { value: "ThucHanh", label: "Thực hành" },
+  { value: "LamSang", label: "Lâm sàng" },
+];
+const ROOM_TYPES_BY_SESSION_TYPE: Record<string, string[]> = {
+  LyThuyet: ["LyThuyet", "SanBai"],
+  ThucHanh: ["ThucHanh", "Labo"],
+  LamSang: ["LamSang"],
+};
+function sessionTypeForRoomType(roomType: string): string {
+  if (roomType === "LyThuyet" || roomType === "SanBai") return "LyThuyet";
+  if (roomType === "ThucHanh" || roomType === "Labo") return "ThucHanh";
+  if (roomType === "LamSang") return "LamSang";
+  return "";
+}
 
 // Việc AS: độ dài 1 tiết phụ thuộc loại Phòng — Lý thuyết dùng TheoryPeriodMinutes, Thực
 // hành/Labo/Lâm sàng dùng PracticePeriodMinutes, Sân bãi mặc định theo giờ Lý thuyết.
@@ -351,6 +374,20 @@ export default function ScheduleGrid() {
     [groupSession, groupRepresentativeRoom, groupForm.periodCount, policies]
   );
 
+  // Việc AW: dropdown Phòng chỉ hiện phòng thuộc đúng nhóm RoomType của Loại buổi học đã chọn.
+  const formRoomsForType = useMemo(
+    () => rooms.filter((r) => ROOM_TYPES_BY_SESSION_TYPE[form.sessionType]?.includes(r.RoomType)),
+    [rooms, form.sessionType]
+  );
+  const mergeRoomsForType = useMemo(
+    () => rooms.filter((r) => ROOM_TYPES_BY_SESSION_TYPE[mergeForm.sessionType]?.includes(r.RoomType)),
+    [rooms, mergeForm.sessionType]
+  );
+  const groupRoomsForType = useMemo(
+    () => rooms.filter((r) => ROOM_TYPES_BY_SESSION_TYPE[groupForm.sessionType]?.includes(r.RoomType)),
+    [rooms, groupForm.sessionType]
+  );
+
   // Gợi ý tách nhóm: sĩ số lớp vượt giới hạn/ca của loại phòng đang chọn ở form xếp lịch thường.
   const capacityHint = useMemo(() => {
     if (!selectedFormClass || !form.roomId) return null;
@@ -622,6 +659,7 @@ export default function ScheduleGrid() {
       semesterId: "",
       classId: String(detail.ClassId),
       subjectId: String(detail.SubjectId),
+      sessionType: sessionTypeForRoomType(detail.RoomType),
       roomId: String(detail.RoomId),
       teacherIds: detail.teacherIds.map(String),
       scheduleDate: detail.ScheduleDate.slice(0, 10),
@@ -968,10 +1006,15 @@ export default function ScheduleGrid() {
             </div>
           )}
           <div className="form-grid">
+            <select value={form.sessionType} onChange={(e) => setForm({ ...form, sessionType: e.target.value, roomId: "" })} required>
+              <option value="">Loại buổi học</option>
+              {SESSION_TYPE_OPTIONS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+            </select>
             <div>
-              <select value={form.roomId} onChange={(e) => setForm({ ...form, roomId: e.target.value })} required>
-                <option value="">Phòng</option>
-                {rooms.map((r) => <option key={r.RoomId} value={r.RoomId}>{r.RoomName}</option>)}
+              <select value={form.roomId} onChange={(e) => setForm({ ...form, roomId: e.target.value })}
+                required disabled={!form.sessionType}>
+                <option value="">{form.sessionType ? "Phòng" : "-- Chọn Loại buổi học trước --"}</option>
+                {formRoomsForType.map((r) => <option key={r.RoomId} value={r.RoomId}>{r.RoomName}</option>)}
               </select>
               {capacityHint && <div className="error-text mt-1">{capacityHint}</div>}
             </div>
@@ -1053,9 +1096,14 @@ export default function ScheduleGrid() {
               <option value="">{mergeCurriculumSubjectIds ? "Môn học" : "-- Chọn Lớp và Kỳ trước --"}</option>
               {mergeSubjects.map((s) => <option key={s.SubjectId} value={s.SubjectId}>{subjectLabel(s)}</option>)}
             </select>
-            <select value={mergeForm.roomId} onChange={(e) => setMergeForm({ ...mergeForm, roomId: e.target.value })} required>
-              <option value="">Phòng</option>
-              {rooms.map((r) => <option key={r.RoomId} value={r.RoomId}>{r.RoomName}</option>)}
+            <select value={mergeForm.sessionType} onChange={(e) => setMergeForm({ ...mergeForm, sessionType: e.target.value, roomId: "" })} required>
+              <option value="">Loại buổi học</option>
+              {SESSION_TYPE_OPTIONS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+            </select>
+            <select value={mergeForm.roomId} onChange={(e) => setMergeForm({ ...mergeForm, roomId: e.target.value })}
+              required disabled={!mergeForm.sessionType}>
+              <option value="">{mergeForm.sessionType ? "Phòng" : "-- Chọn Loại buổi học trước --"}</option>
+              {mergeRoomsForType.map((r) => <option key={r.RoomId} value={r.RoomId}>{r.RoomName}</option>)}
             </select>
             <div>
               <select multiple value={mergeForm.teacherIds} className="w-full"
@@ -1142,6 +1190,13 @@ export default function ScheduleGrid() {
                   : <div className="hint mt-1">Chọn Phòng cho Nhóm 1 bên dưới và nhập số tiết để tính giờ học (độ dài tiết tính theo loại phòng của Nhóm 1)</div>
               )}
             </div>
+            <select value={groupForm.sessionType} onChange={(e) => setGroupForm({
+              ...groupForm, sessionType: e.target.value,
+              groups: groupForm.groups.map((g) => ({ ...g, roomId: "" })),
+            })} required>
+              <option value="">Loại buổi học</option>
+              {SESSION_TYPE_OPTIONS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+            </select>
             <input placeholder="Ghi chú" value={groupForm.note}
               onChange={(e) => setGroupForm({ ...groupForm, note: e.target.value })} />
           </div>
@@ -1151,9 +1206,10 @@ export default function ScheduleGrid() {
               <div key={idx} className="inline-form mb-2">
                 <input placeholder="Tên nhóm (vd Nhóm 1)" value={g.groupLabel}
                   onChange={(e) => updateGroupRow(idx, { groupLabel: e.target.value })} required />
-                <select value={g.roomId} onChange={(e) => updateGroupRow(idx, { roomId: e.target.value })} required>
-                  <option value="">Phòng</option>
-                  {rooms.map((r) => <option key={r.RoomId} value={r.RoomId}>{r.RoomName}</option>)}
+                <select value={g.roomId} onChange={(e) => updateGroupRow(idx, { roomId: e.target.value })}
+                  required disabled={!groupForm.sessionType}>
+                  <option value="">{groupForm.sessionType ? "Phòng" : "-- Chọn Loại buổi học trước --"}</option>
+                  {groupRoomsForType.map((r) => <option key={r.RoomId} value={r.RoomId}>{r.RoomName}</option>)}
                 </select>
                 <select multiple value={g.teacherIds}
                   onChange={(e) => updateGroupRow(idx, { teacherIds: [...e.target.selectedOptions].map((o) => o.value) })}>
