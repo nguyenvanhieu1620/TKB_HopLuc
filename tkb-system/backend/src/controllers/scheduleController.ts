@@ -245,6 +245,19 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
       return;
     }
 
+    // Việc AX: chặn cứng (không chỉ cảnh báo) — kiểm tra TRƯỚC khi insert để không phải vừa lưu
+    // vừa rollback nếu vi phạm.
+    const sessionLengthCheck = await checkSessionLength({ roomId, startTime, endTime });
+    if (sessionLengthCheck.violated) {
+      res.status(400).json({ message: sessionLengthCheck.message });
+      return;
+    }
+    const dailyHoursCheck = await checkDailyHoursLimit({ classId, scheduleDate, roomId, startTime, endTime });
+    if (dailyHoursCheck.violated) {
+      res.status(400).json({ message: dailyHoursCheck.message });
+      return;
+    }
+
     const pool = await getPool();
     const result = await pool
       .request()
@@ -294,16 +307,10 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
     const trainingCheck = await checkTrainingModeRule({
       classId, scheduleDate, startTime, isMakeup,
     });
-    const sessionLengthCheck = await checkSessionLength({ roomId, startTime, endTime });
-    const dailyHoursCheck = await checkDailyHoursLimit({
-      classId, scheduleDate, roomId, startTime, endTime, excludeScheduleId: scheduleId,
-    });
 
     const warnings: string[] = [];
     if (holiday) warnings.push(`Ngày ${scheduleDate} rơi vào ngày nghỉ lễ: ${holiday.Description}`);
     if (trainingCheck.violated) warnings.push(trainingCheck.message!);
-    if (sessionLengthCheck.violated) warnings.push(sessionLengthCheck.message!);
-    if (dailyHoursCheck.violated) warnings.push(dailyHoursCheck.message!);
 
     res.status(201).json({
       scheduleId,
@@ -335,6 +342,24 @@ export async function update(req: AuthRequest, res: Response, next: NextFunction
     const capacityCheck = await checkRoomCapacity({ roomId: roomId as number, totalStudents: classSize });
     if (capacityCheck.violated) {
       res.status(400).json({ message: capacityCheck.message });
+      return;
+    }
+
+    // Việc AX: chặn cứng (không chỉ cảnh báo) — kiểm tra TRƯỚC khi update để không phải vừa lưu
+    // vừa rollback nếu vi phạm.
+    const sessionLengthCheck = await checkSessionLength({
+      roomId: roomId as number, startTime: startTime as string, endTime: endTime as string,
+    });
+    if (sessionLengthCheck.violated) {
+      res.status(400).json({ message: sessionLengthCheck.message });
+      return;
+    }
+    const dailyHoursCheck = await checkDailyHoursLimit({
+      classId: classId as number, scheduleDate: scheduleDate as string, roomId: roomId as number,
+      startTime: startTime as string, endTime: endTime as string, excludeScheduleId: Number(id),
+    });
+    if (dailyHoursCheck.violated) {
+      res.status(400).json({ message: dailyHoursCheck.message });
       return;
     }
 
@@ -387,13 +412,6 @@ export async function update(req: AuthRequest, res: Response, next: NextFunction
     const trainingCheck = await checkTrainingModeRule({
       classId: classId as number, scheduleDate: scheduleDate as string, startTime: startTime as string,
       isMakeup, excludeScheduleId: Number(id),
-    });
-    const sessionLengthCheck = await checkSessionLength({
-      roomId: roomId as number, startTime: startTime as string, endTime: endTime as string,
-    });
-    const dailyHoursCheck = await checkDailyHoursLimit({
-      classId: classId as number, scheduleDate: scheduleDate as string, roomId: roomId as number,
-      startTime: startTime as string, endTime: endTime as string, excludeScheduleId: Number(id),
     });
 
     const warnings: string[] = [];
@@ -509,6 +527,14 @@ export async function mergedCreate(req: AuthRequest, res: Response, next: NextFu
       return;
     }
 
+    // Việc AX: chặn cứng — cùng 1 phòng/giờ cho mọi lớp ghép nên chỉ cần kiểm tra 1 lần, TRƯỚC
+    // khi tạo bất kỳ bản ghi nào (chưa có gì để rollback ở bước này).
+    const sessionLengthCheck = await checkSessionLength({ roomId, startTime, endTime });
+    if (sessionLengthCheck.violated) {
+      res.status(400).json({ message: sessionLengthCheck.message });
+      return;
+    }
+
     const pool = await getPool();
 
     const mergedResult = await pool
@@ -545,10 +571,19 @@ export async function mergedCreate(req: AuthRequest, res: Response, next: NextFu
       });
       if (trainingCheck.violated) trainingWarnings.push(trainingCheck.message!);
 
+      // Việc AX: chặn cứng — vi phạm thì dọn các dòng Schedule/MergedSessions đã tạo trong lần
+      // ghép lớp này (nếu có) rồi từ chối, giống cách checkScheduleConflict đã xử lý ở trên.
       const dailyHoursCheck = await checkDailyHoursLimit({
         classId, scheduleDate, roomId, startTime, endTime, excludeMergedSessionId: mergedSessionId,
       });
-      if (dailyHoursCheck.violated) trainingWarnings.push(dailyHoursCheck.message!);
+      if (dailyHoursCheck.violated) {
+        for (const scheduleId of scheduleIds) {
+          await pool.request().input("id", sql.Int, scheduleId).query(`DELETE FROM Schedule WHERE ScheduleId=@id`);
+        }
+        await pool.request().input("id", sql.Int, mergedSessionId).query(`DELETE FROM MergedSessions WHERE MergedSessionId=@id`);
+        res.status(400).json({ message: `${dailyHoursCheck.message} (lớp ID ${classId})` });
+        return;
+      }
 
       const result = await pool
         .request()
@@ -585,11 +620,9 @@ export async function mergedCreate(req: AuthRequest, res: Response, next: NextFu
     });
 
     const holiday = await findHoliday(scheduleDate, classTrainingInfos[0]?.trainingMode);
-    const sessionLengthCheck = await checkSessionLength({ roomId, startTime, endTime });
 
     const warnings: string[] = [];
     if (holiday) warnings.push(`Ngày ${scheduleDate} rơi vào ngày nghỉ lễ: ${holiday.Description}`);
-    if (sessionLengthCheck.violated) warnings.push(sessionLengthCheck.message!);
     warnings.push(...new Set(trainingWarnings));
 
     res.status(201).json({
@@ -807,17 +840,26 @@ export async function groupedCreate(req: AuthRequest, res: Response, next: NextF
       return;
     }
 
-    // Cảnh báo (nghỉ lễ / hệ đào tạo / độ dài buổi / tổng giờ trong ngày) tính TRƯỚC khi tạo bất
-    // kỳ dòng Schedule nào của lần tách nhóm này — vì các nhóm học SONG SONG cùng giờ nên với lớp,
-    // đây tính là 1 buổi duy nhất trong ngày, không phải cộng dồn thời lượng của từng nhóm.
+    // Kiểm tra TRƯỚC khi tạo bất kỳ dòng Schedule nào của lần tách nhóm này — vì các nhóm học
+    // SONG SONG cùng giờ nên với lớp, đây tính là 1 buổi duy nhất trong ngày, không phải cộng dồn
+    // thời lượng của từng nhóm. Nghỉ lễ/hệ đào tạo vẫn là CẢNH BÁO; độ dài buổi/tổng giờ trong
+    // ngày là CHẶN CỨNG (Việc AX) — kiểm tra trước vòng lặp nên chưa có gì để phải rollback.
     const classInfo = await getClassTrainingMode(classId);
     const holiday = await findHoliday(scheduleDate, classInfo?.trainingMode);
     const trainingCheck = await checkTrainingModeRule({ classId, scheduleDate, startTime, isMakeup });
     const representativeRoomId = groups[0].roomId!;
     const sessionLengthCheck = await checkSessionLength({ roomId: representativeRoomId, startTime, endTime });
+    if (sessionLengthCheck.violated) {
+      res.status(400).json({ message: sessionLengthCheck.message });
+      return;
+    }
     const dailyHoursCheck = await checkDailyHoursLimit({
       classId, scheduleDate, roomId: representativeRoomId, startTime, endTime,
     });
+    if (dailyHoursCheck.violated) {
+      res.status(400).json({ message: dailyHoursCheck.message });
+      return;
+    }
 
     const pool = await getPool();
     const scheduleIds: number[] = [];
@@ -874,8 +916,6 @@ export async function groupedCreate(req: AuthRequest, res: Response, next: NextF
     const warnings: string[] = [];
     if (holiday) warnings.push(`Ngày ${scheduleDate} rơi vào ngày nghỉ lễ: ${holiday.Description}`);
     if (trainingCheck.violated) warnings.push(trainingCheck.message!);
-    if (sessionLengthCheck.violated) warnings.push(sessionLengthCheck.message!);
-    if (dailyHoursCheck.violated) warnings.push(dailyHoursCheck.message!);
 
     res.status(201).json({
       scheduleIds,
