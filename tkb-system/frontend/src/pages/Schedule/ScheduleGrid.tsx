@@ -169,9 +169,12 @@ function EventCardContent({ ev, g, progress }: { ev: ScheduleItem; g: EventGroup
       {progress && (
         <>
           <div className="calendar-event-sub">Số tiết buổi này: {progress.periodsThisSession} tiết</div>
-          <div className="calendar-event-sub">
-            Lũy kế: {progress.cumulativePeriods}{progress.totalPeriods != null ? `/${progress.totalPeriods}` : ""} tiết
-          </div>
+          {progress.theoryTarget > 0 && (
+            <div className="calendar-event-sub">Lý thuyết: {progress.cumulativeTheoryPeriods}/{progress.theoryTarget} tiết</div>
+          )}
+          {progress.practiceTarget > 0 && (
+            <div className="calendar-event-sub">Thực hành: {progress.cumulativePracticePeriods}/{progress.practiceTarget} tiết</div>
+          )}
         </>
       )}
     </>
@@ -198,7 +201,9 @@ export default function ScheduleGrid() {
   // Việc AU: Sửa 1 buổi đã xếp — dùng lại chính form "Xếp buổi học mới", chỉ khóa Lớp/Đợt
   // học/Môn học (không cho đổi sang buổi khác) và hiện tiến độ số tiết đã xếp/tổng số tiết môn.
   const [editingScheduleId, setEditingScheduleId] = useState<number | null>(null);
-  const [editProgress, setEditProgress] = useState<{ totalPeriods: number | null; cumulativePeriods: number } | null>(null);
+  const [editProgress, setEditProgress] = useState<{
+    theoryTarget: number; practiceTarget: number; cumulativeTheoryPeriods: number; cumulativePracticePeriods: number;
+  } | null>(null);
 
   const [mergeForm, setMergeForm] = useState<MergeForm>(emptyMergeForm);
   const [mergeError, setMergeError] = useState("");
@@ -625,7 +630,10 @@ export default function ScheduleGrid() {
       note: detail.Note || "",
       isMakeup: false,
     });
-    setEditProgress({ totalPeriods: detail.totalPeriods, cumulativePeriods: detail.cumulativePeriods });
+    setEditProgress({
+      theoryTarget: detail.theoryTarget, practiceTarget: detail.practiceTarget,
+      cumulativeTheoryPeriods: detail.cumulativeTheoryPeriods, cumulativePracticePeriods: detail.cumulativePracticePeriods,
+    });
     setEditingScheduleId(scheduleId);
     setShowForm(true);
   }
@@ -923,8 +931,14 @@ export default function ScheduleGrid() {
               {" "}— không đổi được Lớp/Kỳ/Môn khi sửa, chỉ chỉnh Phòng/Giảng viên/Ngày/Ca/Số tiết/Ghi chú. Cần đổi Lớp hoặc Môn thì xóa buổi này và xếp lại buổi mới.
               {editProgress && (
                 <div className="mt-1">
-                  Số tiết buổi này: <b>{form.periodCount || "?"}</b> tiết — Lũy kế đến hết buổi này:{" "}
-                  <b>{editProgress.cumulativePeriods}{editProgress.totalPeriods != null ? ` / ${editProgress.totalPeriods}` : ""}</b> tiết
+                  Số tiết buổi này: <b>{form.periodCount || "?"}</b> tiết — Lũy kế đến hết buổi này:
+                  {editProgress.theoryTarget > 0 && (
+                    <> Lý thuyết <b>{editProgress.cumulativeTheoryPeriods}/{editProgress.theoryTarget}</b> tiết</>
+                  )}
+                  {editProgress.theoryTarget > 0 && editProgress.practiceTarget > 0 && ", "}
+                  {editProgress.practiceTarget > 0 && (
+                    <> Thực hành <b>{editProgress.cumulativePracticePeriods}/{editProgress.practiceTarget}</b> tiết</>
+                  )}
                 </div>
               )}
             </div>

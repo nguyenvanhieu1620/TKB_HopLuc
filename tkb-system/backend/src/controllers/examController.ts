@@ -3,6 +3,7 @@ import { sql, getPool } from "../config/db";
 import { checkExamConflict, findHoliday } from "../utils/conflictCheck";
 import { getClassTrainingMode } from "../utils/trainingModeCheck";
 import { getPolicyValue } from "../utils/policyConfig";
+import { getTotalPeriodsForSubject, getPeriodTimelineForSubject } from "../utils/policyRules";
 import { writeAuditLog } from "../utils/auditLog";
 import { notifyTeachers } from "../utils/notify";
 import { AuthRequest } from "../types";
@@ -82,30 +83,63 @@ export async function list(req: AuthRequest, res: Response, next: NextFunction):
   }
 }
 
+// LTHI-02: 1 Lớp+Môn chỉ "đủ điều kiện thi" khi đã xếp ĐỦ CẢ HAI — số tiết Lý thuyết đạt chỉ tiêu
+// VÀ số tiết Thực hành đạt chỉ tiêu (Việc AV — trước đây gộp chung 1 tổng nên báo nhầm đủ điều
+// kiện dù toàn bộ giờ đã xếp đều là Lý thuyết, chưa xếp phút Thực hành nào, hoặc ngược lại).
 export async function eligible(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   try {
     const { semesterId } = req.query as Record<string, string | undefined>;
     const pool = await getPool();
-    const result = await pool
+
+    const rowsResult = await pool
       .request()
       .input("semesterId", sql.Int, semesterId)
-      .query(`
-        SELECT c.ClassId, c.ClassName, sub.SubjectId, sub.SubjectName,
-               (sub.TheoryHours + sub.PracticeHours) AS TotalPeriods,
-               COUNT(s.ScheduleId) AS SoTietDaXep,
-               CASE WHEN EXISTS (
-                 SELECT 1 FROM Exams e WHERE e.ClassId = c.ClassId AND e.SubjectId = sub.SubjectId
-                   AND e.SemesterId = @semesterId
-               ) THEN 1 ELSE 0 END AS DaXepLichThi
-        FROM Classes c
-        INNER JOIN CurriculumItems ci ON ci.MajorId = c.MajorId AND ci.IsActive = 1
-        INNER JOIN Subjects sub ON sub.SubjectId = ci.SubjectId
-        LEFT JOIN Schedule s ON s.ClassId = c.ClassId AND s.SubjectId = sub.SubjectId AND s.SemesterId = @semesterId
-        GROUP BY c.ClassId, c.ClassName, sub.SubjectId, sub.SubjectName, sub.TheoryHours, sub.PracticeHours
-        HAVING COUNT(s.ScheduleId) > 0
-        ORDER BY c.ClassName, sub.SubjectName
+      .query<{
+        ClassId: number; ClassName: string; MajorId: number; CohortId: number | null;
+        SubjectId: number; SubjectName: string; TermNumber: number | null;
+      }>(`
+        SELECT DISTINCT c.ClassId, c.ClassName, c.MajorId, c.CohortId, s.SubjectId, sub.SubjectName, sem.TermNumber
+        FROM Schedule s
+        INNER JOIN Classes c ON c.ClassId = s.ClassId
+        INNER JOIN Subjects sub ON sub.SubjectId = s.SubjectId
+        LEFT JOIN Semesters sem ON sem.SemesterId = s.SemesterId
+        WHERE s.SemesterId = @semesterId
       `);
-    res.json(result.recordset);
+
+    const result = await Promise.all(
+      rowsResult.recordset.map(async (row) => {
+        const [targets, timeline, examResult] = await Promise.all([
+          getTotalPeriodsForSubject(row.MajorId, row.SubjectId, row.CohortId, row.TermNumber),
+          getPeriodTimelineForSubject(row.ClassId, row.SubjectId),
+          pool
+            .request()
+            .input("classId", sql.Int, row.ClassId)
+            .input("subjectId", sql.Int, row.SubjectId)
+            .input("semesterId", sql.Int, semesterId)
+            .query<{ Count: number }>(
+              `SELECT COUNT(*) AS Count FROM Exams WHERE ClassId=@classId AND SubjectId=@subjectId AND SemesterId=@semesterId`
+            ),
+        ]);
+        const last = timeline[timeline.length - 1];
+        const theoryDone = last?.cumulativeTheoryPeriods ?? 0;
+        const practiceDone = last?.cumulativePracticePeriods ?? 0;
+        return {
+          ClassId: row.ClassId,
+          ClassName: row.ClassName,
+          SubjectId: row.SubjectId,
+          SubjectName: row.SubjectName,
+          TheoryDone: theoryDone,
+          TheoryTarget: targets.theoryTarget,
+          PracticeDone: practiceDone,
+          PracticeTarget: targets.practiceTarget,
+          DuDieuKienThi: theoryDone >= targets.theoryTarget && practiceDone >= targets.practiceTarget,
+          DaXepLichThi: examResult.recordset[0].Count > 0,
+        };
+      })
+    );
+
+    result.sort((a, b) => a.ClassName.localeCompare(b.ClassName) || a.SubjectName.localeCompare(b.SubjectName));
+    res.json(result);
   } catch (err) {
     next(err);
   }

@@ -69,9 +69,12 @@ export async function checkRoomCapacity({ roomId, totalStudents }: CapacityCheck
 
 export type SessionCategory = "LyThuyet" | "ThucHanh";
 
+// Việc AV: LyThuyet/SanBai tính là Lý thuyết; ThucHanh/Labo/LamSang tính là Thực hành — đồng bộ
+// với cách getPeriodMinutes đã nhóm loại phòng (trước đây SanBai/Labo bị bỏ sót, trả về null, khiến
+// checkSessionLength/checkDailyHoursLimit âm thầm bỏ qua các buổi dùng phòng loại này).
 export function classifyRoomCategory(roomType: string): SessionCategory | null {
-  if (roomType === "LyThuyet") return "LyThuyet";
-  if (roomType === "ThucHanh" || roomType === "LamSang") return "ThucHanh";
+  if (roomType === "LyThuyet" || roomType === "SanBai") return "LyThuyet";
+  if (roomType === "ThucHanh" || roomType === "Labo" || roomType === "LamSang") return "ThucHanh";
   return null;
 }
 
@@ -194,14 +197,25 @@ export async function getPeriodMinutes(roomType: string): Promise<number> {
   return getPolicyValue("TheoryPeriodMinutes");
 }
 
-// Việc AU (fix): tổng số tiết CHUẨN của 1 Môn trong Khung chương trình của 1 Lớp — ưu tiên dòng
-// ghi đè riêng theo Khóa (giống curriculumItemController.list), fallback về tổng giờ mặc định
-// khai báo trên Subject nếu môn chưa có trong khung chương trình.
+export interface SubjectPeriodTargets {
+  theoryTarget: number;
+  practiceTarget: number;
+}
+
+// Việc AV: sửa lỗi nghiêm trọng — trước đây gộp Lý thuyết + Thực hành (+ cả giờ Thi) thành 1 tổng
+// duy nhất, nên 1 môn xếp toàn bộ giờ Lý thuyết (chưa xếp phút Thực hành nào) vẫn có thể bị tính
+// "đủ tổng" và báo nhầm đủ điều kiện thi. Nay trả về 2 chỉ tiêu RIÊNG: theoryTarget/practiceTarget
+// — lấy từ CurriculumItems.TheoryHours/PracticeHours (ưu tiên dòng ghi đè riêng theo Khóa, COALESCE
+// TỪNG CỘT để 1 dòng ghi đè chỉ 1 phần vẫn fallback đúng cột còn thiếu), fallback về
+// Subjects.TheoryHours/PracticeHours nếu môn chưa có trong khung chương trình. KHÔNG tính ExamHours
+// vào đây — đó là giờ thi, không phải giờ học, không thuộc "tiến độ đã học".
 export async function getTotalPeriodsForSubject(
   majorId: number, subjectId: number, cohortId: number | null, termNumber: number | null
-): Promise<number | null> {
+): Promise<SubjectPeriodTargets> {
   const pool = await getPool();
-  let totalPeriods: number | null = null;
+  let theoryTarget: number | null = null;
+  let practiceTarget: number | null = null;
+
   if (termNumber != null) {
     const ciResult = await pool
       .request()
@@ -209,36 +223,48 @@ export async function getTotalPeriodsForSubject(
       .input("subjectId", sql.Int, subjectId)
       .input("termNumber", sql.Int, termNumber)
       .input("cohortId", sql.Int, cohortId)
-      .query<{ TotalHours: number | null }>(`
-        SELECT TOP 1 COALESCE(ci.TotalHours, sub.TheoryHours + sub.PracticeHours + sub.ExamHours) AS TotalHours
+      .query<{ TheoryHours: number | null; PracticeHours: number | null }>(`
+        SELECT TOP 1 COALESCE(ci.TheoryHours, sub.TheoryHours) AS TheoryHours,
+               COALESCE(ci.PracticeHours, sub.PracticeHours) AS PracticeHours
         FROM CurriculumItems ci
         INNER JOIN Subjects sub ON sub.SubjectId = ci.SubjectId
         WHERE ci.MajorId = @majorId AND ci.SubjectId = @subjectId AND ci.TermNumber = @termNumber
           AND (ci.CohortId = @cohortId OR ci.CohortId IS NULL)
         ORDER BY CASE WHEN ci.CohortId = @cohortId THEN 0 ELSE 1 END
       `);
-    totalPeriods = ciResult.recordset[0]?.TotalHours ?? null;
+    const row = ciResult.recordset[0];
+    if (row) {
+      theoryTarget = row.TheoryHours;
+      practiceTarget = row.PracticeHours;
+    }
   }
-  if (totalPeriods == null) {
+
+  if (theoryTarget == null || practiceTarget == null) {
     const subResult = await pool
       .request()
       .input("subjectId", sql.Int, subjectId)
-      .query<{ Total: number }>(`SELECT TheoryHours + PracticeHours + ExamHours AS Total FROM Subjects WHERE SubjectId = @subjectId`);
-    totalPeriods = subResult.recordset[0]?.Total ?? null;
+      .query<{ TheoryHours: number; PracticeHours: number }>(`SELECT TheoryHours, PracticeHours FROM Subjects WHERE SubjectId = @subjectId`);
+    const row = subResult.recordset[0];
+    if (theoryTarget == null) theoryTarget = row?.TheoryHours ?? 0;
+    if (practiceTarget == null) practiceTarget = row?.PracticeHours ?? 0;
   }
-  return totalPeriods;
+
+  return { theoryTarget, practiceTarget };
 }
 
 export interface PeriodTimelineEntry {
   scheduleId: number;
+  category: SessionCategory | null;
   periodsThisSession: number;
-  cumulativePeriods: number;
+  cumulativeTheoryPeriods: number;
+  cumulativePracticePeriods: number;
 }
 
-// Việc AU (fix): mỗi buổi trong 1 Lớp + 1 Môn có tiến độ LŨY KẾ RIÊNG theo đúng thứ tự thời gian
-// của nó (buổi diễn ra trước cộng dồn ít hơn buổi diễn ra sau) — KHÔNG dùng chung 1 tổng cho mọi
-// buổi như trước (gây lỗi: thêm buổi 2 làm số hiện trên buổi 1 cũng nhảy theo). Quy đổi theo độ
-// dài tiết của TỪNG buổi (theo loại phòng buổi đó dùng) để không cộng nhầm phút thô.
+// Việc AU (fix) + Việc AV: mỗi buổi trong 1 Lớp + 1 Môn có tiến độ LŨY KẾ RIÊNG theo đúng thứ tự
+// thời gian của nó (buổi diễn ra trước cộng dồn ít hơn buổi diễn ra sau), và lũy kế Lý thuyết /
+// Thực hành được tính TÁCH BIỆT theo loại phòng của từng buổi (classifyRoomCategory) — 1 buổi chỉ
+// cộng vào ĐÚNG 1 trong 2 dòng lũy kế, không cộng chung như bản trước (gây lỗi báo nhầm đủ điều
+// kiện thi dù mới xếp toàn Lý thuyết, chưa xếp Thực hành nào).
 export async function getPeriodTimelineForSubject(classId: number, subjectId: number): Promise<PeriodTimelineEntry[]> {
   const pool = await getPool();
   const rowsResult = await pool
@@ -254,7 +280,8 @@ export async function getPeriodTimelineForSubject(classId: number, subjectId: nu
     `);
 
   const periodMinutesCache = new Map<string, number>();
-  let cumulative = 0;
+  let cumulativeTheory = 0;
+  let cumulativePractice = 0;
   const timeline: PeriodTimelineEntry[] = [];
   for (const row of rowsResult.recordset) {
     let periodMinutes = periodMinutesCache.get(row.RoomType);
@@ -263,11 +290,15 @@ export async function getPeriodTimelineForSubject(classId: number, subjectId: nu
       periodMinutesCache.set(row.RoomType, periodMinutes);
     }
     const periods = diffMinutes(row.StartTime, row.EndTime) / periodMinutes;
-    cumulative += periods;
+    const category = classifyRoomCategory(row.RoomType);
+    if (category === "LyThuyet") cumulativeTheory += periods;
+    else if (category === "ThucHanh") cumulativePractice += periods;
     timeline.push({
       scheduleId: row.ScheduleId,
+      category,
       periodsThisSession: Math.round(periods * 10) / 10,
-      cumulativePeriods: Math.round(cumulative * 10) / 10,
+      cumulativeTheoryPeriods: Math.round(cumulativeTheory * 10) / 10,
+      cumulativePracticePeriods: Math.round(cumulativePractice * 10) / 10,
     });
   }
   return timeline;

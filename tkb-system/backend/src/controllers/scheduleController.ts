@@ -89,10 +89,13 @@ export async function list(req: AuthRequest, res: Response, next: NextFunction):
 
 interface ClassPeriodProgressEntry {
   scheduleId: number;
+  category: string | null;
   periodsThisSession: number;
-  cumulativePeriods: number;
+  cumulativeTheoryPeriods: number;
+  cumulativePracticePeriods: number;
   subjectId: number;
-  totalPeriods: number | null;
+  theoryTarget: number;
+  practiceTarget: number;
 }
 
 async function getPeriodProgressForClass(classId: number, majorId: number, cohortId: number | null): Promise<ClassPeriodProgressEntry[]> {
@@ -108,11 +111,13 @@ async function getPeriodProgressForClass(classId: number, majorId: number, cohor
   return (
     await Promise.all(
       subjectsResult.recordset.map(async (row) => {
-        const [totalPeriods, timeline] = await Promise.all([
+        const [targets, timeline] = await Promise.all([
           getTotalPeriodsForSubject(majorId, row.SubjectId, cohortId, row.TermNumber),
           getPeriodTimelineForSubject(classId, row.SubjectId),
         ]);
-        return timeline.map((entry) => ({ ...entry, subjectId: row.SubjectId, totalPeriods }));
+        return timeline.map((entry) => ({
+          ...entry, subjectId: row.SubjectId, theoryTarget: targets.theoryTarget, practiceTarget: targets.practiceTarget,
+        }));
       })
     )
   ).flat();
@@ -194,16 +199,19 @@ export async function getById(req: AuthRequest, res: Response, next: NextFunctio
     );
     const teacherIds = teacherResult.recordset.map((t) => t.TeacherId);
 
-    const [totalPeriods, timeline] = await Promise.all([
+    const [targets, timeline] = await Promise.all([
       getTotalPeriodsForSubject(row.MajorId, row.SubjectId, row.CohortId, row.TermNumber),
       getPeriodTimelineForSubject(row.ClassId, row.SubjectId),
     ]);
     const thisEntry = timeline.find((t) => t.scheduleId === row.ScheduleId);
 
     res.json({
-      ...row, teacherIds, totalPeriods,
+      ...row, teacherIds,
+      theoryTarget: targets.theoryTarget,
+      practiceTarget: targets.practiceTarget,
       periodsThisSession: thisEntry?.periodsThisSession ?? 0,
-      cumulativePeriods: thisEntry?.cumulativePeriods ?? 0,
+      cumulativeTheoryPeriods: thisEntry?.cumulativeTheoryPeriods ?? 0,
+      cumulativePracticePeriods: thisEntry?.cumulativePracticePeriods ?? 0,
     });
   } catch (err) {
     next(err);
