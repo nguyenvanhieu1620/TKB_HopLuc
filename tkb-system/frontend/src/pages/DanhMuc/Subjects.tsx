@@ -458,7 +458,7 @@ export default function Subjects() {
         <thead>
           <tr>
             <th>#</th><th>Mã môn</th><th>Tên môn</th><th>Ngành</th><th>Khoa</th><th>Tín chỉ</th>
-            <th>LT</th><th>TH</th><th>Thi</th><th></th>
+            <th>LT</th><th>TH</th><th>Thi</th><th>Trạng thái</th><th></th>
           </tr>
         </thead>
         <tbody>
@@ -466,18 +466,18 @@ export default function Subjects() {
             <tr key={it.SubjectId} className={it.IsActive ? "" : "opacity-50"}>
               <td>{idx + 1}</td>
               <td>{it.SubjectCode}</td>
-              <td>
-                {it.SubjectName}
-                {!it.IsActive && (
-                  <span className="ml-1.5 text-[11px] px-1.5 py-0.5 rounded bg-gray-200 text-gray-600">Ngừng dùng</span>
-                )}
-              </td>
+              <td>{it.SubjectName}</td>
               <td>{it.MajorName}</td>
               <td>{it.FacultyName}</td>
               <td>{it.Credits}</td>
               <td>{it.TheoryHours}</td>
               <td>{it.PracticeHours}</td>
               <td>{it.ExamHours}</td>
+              <td>
+                {it.IsActive
+                  ? <span className="text-[11px] px-1.5 py-0.5 rounded bg-green-100 text-green-700">Đang sử dụng</span>
+                  : <span className="text-[11px] px-1.5 py-0.5 rounded bg-gray-200 text-gray-600">Ngừng sử dụng</span>}
+              </td>
               <td>
                 <button onClick={() => handleEdit(it)}>Sửa</button>
                 <button onClick={() => handleDelete(it.SubjectId)}>Xóa</button>
