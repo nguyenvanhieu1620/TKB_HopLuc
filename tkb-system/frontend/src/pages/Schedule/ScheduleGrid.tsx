@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import axiosClient from "../../api/axiosClient";
 import { useAuth } from "../../context/AuthContext";
-import { ScheduleItem, Semester, SchoolClass, Subject, Room, Teacher, Session, SchedulingPolicyItem, ApiErrorResponse, CopyWeekResult } from "../../types";
+import { ScheduleItem, Semester, SchoolClass, Subject, Room, Teacher, Session, SchedulingPolicyItem, ApiErrorResponse, CopyWeekResult, CurriculumItem } from "../../types";
 import { AxiosError } from "axios";
 import { addDays, addMinutesToTime, colorForId, findTodayWeekIndex, getWeeksInSemester, parseDateKey, startOfWeek, toDateKey, WEEKDAY_LABELS } from "../../../utils/calendar";
 import { buildWorkbook, downloadWorkbook } from "../../../utils/excel";
@@ -111,6 +111,17 @@ function fmtDDMMYYYY(d: Date): string {
   return `${fmtDDMM(d)}/${d.getFullYear()}`;
 }
 
+// Việc AT: dropdown chọn môn chỉ hiện đúng những môn đã khai báo trong Khung chương trình
+// (CurriculumItems) cho đúng Ngành + đúng Kỳ của Lớp/Đợt học đang chọn — không hiện môn của
+// Kỳ khác dù cùng Ngành. Thiếu majorId hoặc termNumber thì coi như chưa lọc được gì.
+async function loadCurriculumSubjectIds(majorId?: number, termNumber?: number | null, cohortId?: number | null): Promise<Set<number>> {
+  if (!majorId || !termNumber) return new Set();
+  const params: Record<string, string> = { majorId: String(majorId), termNumber: String(termNumber) };
+  if (cohortId) params.cohortId = String(cohortId);
+  const res = await axiosClient.get<CurriculumItem[]>("/curriculum-items", { params });
+  return new Set(res.data.map((ci) => ci.SubjectId));
+}
+
 function trainingModeLabel(mode: "CQ" | "LT" | null): string {
   if (mode === "CQ") return "Chính quy (CQ)";
   if (mode === "LT") return "Liên thông (LT)";
@@ -214,19 +225,56 @@ export default function ScheduleGrid() {
     [classes, groupForm.classId]
   );
 
-  // Việc AR: mỗi Lớp thuộc 1 Ngành cố định — chỉ hiện các môn của đúng Ngành đó trong dropdown
-  // chọn môn (khi chưa chọn Lớp thì hiện tất cả để không chặn luồng thao tác).
+  const selectedFormSemester = useMemo(
+    () => formSemesters.find((s) => String(s.SemesterId) === form.semesterId) || null,
+    [formSemesters, form.semesterId]
+  );
+  const selectedMergeSemester = useMemo(
+    () => mergeSemesters.find((s) => String(s.SemesterId) === mergeForm.semesterId) || null,
+    [mergeSemesters, mergeForm.semesterId]
+  );
+  const selectedGroupSemester = useMemo(
+    () => groupSemesters.find((s) => String(s.SemesterId) === groupForm.semesterId) || null,
+    [groupSemesters, groupForm.semesterId]
+  );
+
+  // Việc AT: dropdown chọn môn chỉ hiện đúng những môn đã khai báo trong Khung chương trình
+  // (CurriculumItems) cho đúng Ngành CỦA LỚP + đúng Kỳ CỦA ĐỢT HỌC đang chọn — chặt hơn Việc AR
+  // (vốn chỉ lọc theo Ngành, không phân biệt Kỳ). Chưa đủ Lớp + Kỳ thì coi như chưa có môn nào.
+  const [formCurriculumSubjectIds, setFormCurriculumSubjectIds] = useState<Set<number> | null>(null);
+  const [mergeCurriculumSubjectIds, setMergeCurriculumSubjectIds] = useState<Set<number> | null>(null);
+  const [groupCurriculumSubjectIds, setGroupCurriculumSubjectIds] = useState<Set<number> | null>(null);
+
+  useEffect(() => {
+    if (!selectedFormClass || !selectedFormSemester) { setFormCurriculumSubjectIds(null); return; }
+    loadCurriculumSubjectIds(selectedFormClass.MajorId, selectedFormSemester.TermNumber, selectedFormClass.CohortId)
+      .then(setFormCurriculumSubjectIds);
+  }, [selectedFormClass?.MajorId, selectedFormClass?.CohortId, selectedFormSemester?.TermNumber]);
+
+  useEffect(() => {
+    const first = selectedMergeClasses[0] || null;
+    if (!first || !selectedMergeSemester) { setMergeCurriculumSubjectIds(null); return; }
+    loadCurriculumSubjectIds(first.MajorId, selectedMergeSemester.TermNumber, first.CohortId)
+      .then(setMergeCurriculumSubjectIds);
+  }, [selectedMergeClasses[0]?.MajorId, selectedMergeClasses[0]?.CohortId, selectedMergeSemester?.TermNumber]);
+
+  useEffect(() => {
+    if (!selectedGroupClass || !selectedGroupSemester) { setGroupCurriculumSubjectIds(null); return; }
+    loadCurriculumSubjectIds(selectedGroupClass.MajorId, selectedGroupSemester.TermNumber, selectedGroupClass.CohortId)
+      .then(setGroupCurriculumSubjectIds);
+  }, [selectedGroupClass?.MajorId, selectedGroupClass?.CohortId, selectedGroupSemester?.TermNumber]);
+
   const formSubjects = useMemo(
-    () => (selectedFormClass ? subjects.filter((s) => s.MajorId === selectedFormClass.MajorId) : subjects),
-    [subjects, selectedFormClass]
+    () => (formCurriculumSubjectIds ? subjects.filter((s) => formCurriculumSubjectIds.has(s.SubjectId)) : []),
+    [subjects, formCurriculumSubjectIds]
   );
   const mergeSubjects = useMemo(
-    () => (selectedMergeClasses[0] ? subjects.filter((s) => s.MajorId === selectedMergeClasses[0].MajorId) : subjects),
-    [subjects, selectedMergeClasses]
+    () => (mergeCurriculumSubjectIds ? subjects.filter((s) => mergeCurriculumSubjectIds.has(s.SubjectId)) : []),
+    [subjects, mergeCurriculumSubjectIds]
   );
   const groupSubjects = useMemo(
-    () => (selectedGroupClass ? subjects.filter((s) => s.MajorId === selectedGroupClass.MajorId) : subjects),
-    [subjects, selectedGroupClass]
+    () => (groupCurriculumSubjectIds ? subjects.filter((s) => groupCurriculumSubjectIds.has(s.SubjectId)) : []),
+    [subjects, groupCurriculumSubjectIds]
   );
 
   // Việc AS: tính EndTime theo Số tiết thực tế thay vì lấp đầy cả Ca — mỗi form tra Phòng/Ca
@@ -682,7 +730,7 @@ export default function ScheduleGrid() {
           <h3>Xếp buổi học mới</h3>
           <div className="form-grid">
             <div>
-              <select value={form.classId} onChange={(e) => setForm({ ...form, classId: e.target.value, semesterId: "" })} required>
+              <select value={form.classId} onChange={(e) => setForm({ ...form, classId: e.target.value, semesterId: "", subjectId: "" })} required>
                 <option value="">Lớp</option>
                 {classes.map((c) => <option key={c.ClassId} value={c.ClassId}>{c.ClassName}</option>)}
               </select>
@@ -692,13 +740,14 @@ export default function ScheduleGrid() {
                 </div>
               )}
             </div>
-            <select value={form.semesterId} onChange={(e) => setForm({ ...form, semesterId: e.target.value })}
+            <select value={form.semesterId} onChange={(e) => setForm({ ...form, semesterId: e.target.value, subjectId: "" })}
               required disabled={!form.classId}>
               <option value="">{form.classId ? "Đợt học" : "-- Chọn lớp trước --"}</option>
               {formSemesters.map((s) => <option key={s.SemesterId} value={s.SemesterId}>{s.SemesterName}</option>)}
             </select>
-            <select value={form.subjectId} onChange={(e) => setForm({ ...form, subjectId: e.target.value })} required>
-              <option value="">Môn học</option>
+            <select value={form.subjectId} onChange={(e) => setForm({ ...form, subjectId: e.target.value })}
+              required disabled={!formCurriculumSubjectIds}>
+              <option value="">{formCurriculumSubjectIds ? "Môn học" : "-- Chọn Lớp và Kỳ trước --"}</option>
               {formSubjects.map((s) => <option key={s.SubjectId} value={s.SubjectId}>{subjectLabel(s)}</option>)}
             </select>
             <div>
@@ -756,7 +805,7 @@ export default function ScheduleGrid() {
             <div>
               <select multiple value={mergeForm.classIds} className="w-full"
                 onChange={(e) => setMergeForm({
-                  ...mergeForm, classIds: [...e.target.selectedOptions].map((o) => o.value), semesterId: "",
+                  ...mergeForm, classIds: [...e.target.selectedOptions].map((o) => o.value), semesterId: "", subjectId: "",
                 })}>
                 {classes.map((c) => <option key={c.ClassId} value={c.ClassId}>{c.ClassName}</option>)}
               </select>
@@ -771,7 +820,7 @@ export default function ScheduleGrid() {
               )}
             </div>
             <div>
-              <select value={mergeForm.semesterId} onChange={(e) => setMergeForm({ ...mergeForm, semesterId: e.target.value })}
+              <select value={mergeForm.semesterId} onChange={(e) => setMergeForm({ ...mergeForm, semesterId: e.target.value, subjectId: "" })}
                 required disabled={mergeForm.classIds.length === 0}>
                 <option value="">{mergeForm.classIds.length > 0 ? "Đợt học" : "-- Chọn lớp trước --"}</option>
                 {mergeSemesters.map((s) => <option key={s.SemesterId} value={s.SemesterId}>{s.SemesterName}</option>)}
@@ -780,8 +829,9 @@ export default function ScheduleGrid() {
                 <div className="hint mt-1">Danh sách Đợt học lấy theo lớp đầu tiên đã chọn — các lớp ghép chung phải cùng Đợt học.</div>
               )}
             </div>
-            <select value={mergeForm.subjectId} onChange={(e) => setMergeForm({ ...mergeForm, subjectId: e.target.value })} required>
-              <option value="">Môn học</option>
+            <select value={mergeForm.subjectId} onChange={(e) => setMergeForm({ ...mergeForm, subjectId: e.target.value })}
+              required disabled={!mergeCurriculumSubjectIds}>
+              <option value="">{mergeCurriculumSubjectIds ? "Môn học" : "-- Chọn Lớp và Kỳ trước --"}</option>
               {mergeSubjects.map((s) => <option key={s.SubjectId} value={s.SubjectId}>{subjectLabel(s)}</option>)}
             </select>
             <select value={mergeForm.roomId} onChange={(e) => setMergeForm({ ...mergeForm, roomId: e.target.value })} required>
@@ -834,7 +884,7 @@ export default function ScheduleGrid() {
           <h3>🧩 Xếp theo nhóm (1 lớp chia nhiều nhóm học song song)</h3>
           <div className="form-grid">
             <div>
-              <select value={groupForm.classId} onChange={(e) => setGroupForm({ ...groupForm, classId: e.target.value, semesterId: "" })} required>
+              <select value={groupForm.classId} onChange={(e) => setGroupForm({ ...groupForm, classId: e.target.value, semesterId: "", subjectId: "" })} required>
                 <option value="">Lớp</option>
                 {classes.map((c) => <option key={c.ClassId} value={c.ClassId}>{c.ClassName}</option>)}
               </select>
@@ -842,13 +892,14 @@ export default function ScheduleGrid() {
                 <div className="hint mt-1">Sĩ số lớp: {selectedGroupClass.ClassSize} — chia đều hoặc theo thực tế vào các nhóm bên dưới</div>
               )}
             </div>
-            <select value={groupForm.semesterId} onChange={(e) => setGroupForm({ ...groupForm, semesterId: e.target.value })}
+            <select value={groupForm.semesterId} onChange={(e) => setGroupForm({ ...groupForm, semesterId: e.target.value, subjectId: "" })}
               required disabled={!groupForm.classId}>
               <option value="">{groupForm.classId ? "Đợt học" : "-- Chọn lớp trước --"}</option>
               {groupSemesters.map((s) => <option key={s.SemesterId} value={s.SemesterId}>{s.SemesterName}</option>)}
             </select>
-            <select value={groupForm.subjectId} onChange={(e) => setGroupForm({ ...groupForm, subjectId: e.target.value })} required>
-              <option value="">Môn học</option>
+            <select value={groupForm.subjectId} onChange={(e) => setGroupForm({ ...groupForm, subjectId: e.target.value })}
+              required disabled={!groupCurriculumSubjectIds}>
+              <option value="">{groupCurriculumSubjectIds ? "Môn học" : "-- Chọn Lớp và Kỳ trước --"}</option>
               {groupSubjects.map((s) => <option key={s.SubjectId} value={s.SubjectId}>{subjectLabel(s)}</option>)}
             </select>
             <input type="date" value={groupForm.scheduleDate}

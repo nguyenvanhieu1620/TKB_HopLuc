@@ -32,13 +32,17 @@ interface BulkCurriculumRow {
 
 export async function list(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { majorId, cohortId } = req.query as Record<string, string | undefined>;
+    const { majorId, cohortId, termNumber } = req.query as Record<string, string | undefined>;
     const pool = await getPool();
     const request = pool.request();
     let where = "WHERE 1=1";
     if (majorId) {
       request.input("majorId", sql.Int, majorId);
       where += " AND ci.MajorId = @majorId";
+    }
+    if (termNumber) {
+      request.input("termNumber", sql.Int, termNumber);
+      where += " AND ci.TermNumber = @termNumber";
     }
 
     // Có lọc theo Khóa: 1 môn/kỳ có thể có 1 dòng áp dụng chung (CohortId NULL) và 1 dòng ghi đè
