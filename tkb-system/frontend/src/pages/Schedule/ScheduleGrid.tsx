@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import axiosClient from "../../api/axiosClient";
 import { useAuth } from "../../context/AuthContext";
-import { ScheduleItem, ScheduleDetail, SchedulePeriodProgress, Semester, SchoolClass, Subject, Room, Teacher, Session, SchedulingPolicyItem, ApiErrorResponse, CopyWeekResult, CurriculumItem } from "../../types";
+import { ScheduleItem, ScheduleDetail, SchedulePeriodProgress, Semester, SchoolClass, Subject, Room, Teacher, Session, SchedulingPolicyItem, ApiErrorResponse, CopyWeekResult, CurriculumItem, Cohort } from "../../types";
 import { AxiosError } from "axios";
 import { addDays, addMinutesToTime, colorForId, diffMinutesBetweenTimes, findTodayWeekIndex, getWeeksInSemester, parseDateKey, startOfWeek, toDateKey, WEEKDAY_LABELS } from "../../../utils/calendar";
 import { buildWorkbook, downloadWorkbook } from "../../../utils/excel";
@@ -196,6 +196,15 @@ export default function ScheduleGrid() {
 
   const [selectedWeekIndex, setSelectedWeekIndex] = useState(0);
 
+  // Việc AU: chế độ xem "Tất cả các lớp" — bảng tổng hợp toàn trường theo TUẦN LỊCH THẬT (không
+  // theo Tuần N của 1 Kỳ, vì mỗi lớp trong cùng Khóa có thể đang ở Kỳ khác nhau).
+  const [viewMode, setViewMode] = useState<"byClass" | "allClasses">("byClass");
+  const [cohorts, setCohorts] = useState<Cohort[]>([]);
+  const [allClassesCohortId, setAllClassesCohortId] = useState("");
+  const [allClassesTrainingMode, setAllClassesTrainingMode] = useState("");
+  const [allClassesWeekStart, setAllClassesWeekStart] = useState(() => startOfWeek(new Date()));
+  const [allClassesRows, setAllClassesRows] = useState<ScheduleItem[]>([]);
+
   const selectedSemester = useMemo(
     () => semesters.find((s) => String(s.SemesterId) === filters.semesterId) || null,
     [semesters, filters.semesterId]
@@ -325,18 +334,20 @@ export default function ScheduleGrid() {
   }, [selectedFormClass, form.roomId, rooms, policies]);
 
   async function loadLookups() {
-    const [cls, subj, room, tch, ses, policy] = await Promise.all([
+    const [cls, subj, room, tch, ses, policy, coh] = await Promise.all([
       axiosClient.get<SchoolClass[]>("/classes"),
       axiosClient.get<Subject[]>("/subjects", { params: { isActive: true } }),
       axiosClient.get<Room[]>("/rooms"),
       axiosClient.get<Teacher[]>("/teachers"),
       axiosClient.get<Session[]>("/sessions"),
       axiosClient.get<SchedulingPolicyItem[]>("/scheduling-policy"),
+      axiosClient.get<Cohort[]>("/cohorts"),
     ]);
     setClasses(cls.data); setSubjects(subj.data);
     setRooms(room.data); setTeachers(tch.data);
     setSessions(ses.data.sort((a, b) => a.SortOrder - b.SortOrder));
     setPolicies(Object.fromEntries(policy.data.map((p) => [p.PolicyKey, Number(p.PolicyValue)])));
+    setCohorts(coh.data);
   }
 
   // Mỗi Lớp có bộ Kỳ học riêng — không còn danh sách Đợt học chung, phải nạp lại theo đúng
@@ -414,6 +425,64 @@ export default function ScheduleGrid() {
     }
     return map;
   }, [weekDays, eventsByDate, sessions]);
+
+  // Việc AU: chế độ xem "Tất cả các lớp" — cột = từng Lớp thuộc Khóa đang chọn (lọc thêm Hệ đào
+  // tạo nếu có), hàng = Thứ x Buổi trong TUẦN LỊCH THẬT đang xem (không phụ thuộc Kỳ của lớp nào).
+  const allClassesDays = useMemo(
+    () => Array.from({ length: 7 }, (_, i) => addDays(allClassesWeekStart, i)),
+    [allClassesWeekStart]
+  );
+
+  const visibleAllClasses = useMemo(() => {
+    if (!allClassesCohortId) return [];
+    return classes
+      .filter((c) => c.IsActive && String(c.CohortId) === allClassesCohortId
+        && (!allClassesTrainingMode || c.TrainingMode === allClassesTrainingMode))
+      .sort((a, b) => a.ClassName.localeCompare(b.ClassName));
+  }, [classes, allClassesCohortId, allClassesTrainingMode]);
+
+  async function loadAllClassesSchedule() {
+    if (!allClassesCohortId) {
+      setAllClassesRows([]);
+      return;
+    }
+    const from = toDateKey(allClassesWeekStart);
+    const to = toDateKey(addDays(allClassesWeekStart, 6));
+    const res = await axiosClient.get<ScheduleItem[]>("/schedule", { params: { cohortId: allClassesCohortId, from, to } });
+    setAllClassesRows(res.data);
+  }
+  useEffect(() => {
+    if (viewMode === "allClasses") loadAllClassesSchedule();
+  }, [viewMode, allClassesCohortId, allClassesWeekStart]);
+
+  // classId -> ngày (YYYY-MM-DD) -> SessionId -> các buổi khớp đúng ngày+ca đó.
+  const allClassesGrid = useMemo(() => {
+    const map = new Map<number, Map<string, Map<number, ScheduleItem[]>>>();
+    for (const ev of allClassesRows) {
+      const dateKey = ev.ScheduleDate.slice(0, 10);
+      const session = sessions.find((s) => s.StartTime < ev.EndTime && s.EndTime > ev.StartTime);
+      if (!session) continue;
+      if (!map.has(ev.ClassId)) map.set(ev.ClassId, new Map());
+      const byDate = map.get(ev.ClassId)!;
+      if (!byDate.has(dateKey)) byDate.set(dateKey, new Map());
+      const bySession = byDate.get(dateKey)!;
+      if (!bySession.has(session.SessionId)) bySession.set(session.SessionId, []);
+      bySession.get(session.SessionId)!.push(ev);
+    }
+    return map;
+  }, [allClassesRows, sessions]);
+
+  // Ẩn bớt Thứ không có buổi nào của các lớp đang hiện (thường là Chủ nhật) — nhưng nếu cả tuần
+  // trống trơn thì vẫn hiện đủ 7 ngày để không làm bảng biến mất hoàn toàn, gây hiểu lầm là lỗi.
+  const allClassesVisibleDays = useMemo(() => {
+    if (allClassesRows.length === 0) return allClassesDays;
+    const visibleClassIds = new Set(visibleAllClasses.map((c) => c.ClassId));
+    const filtered = allClassesDays.filter((day) => {
+      const key = toDateKey(day);
+      return allClassesRows.some((ev) => visibleClassIds.has(ev.ClassId) && ev.ScheduleDate.slice(0, 10) === key);
+    });
+    return filtered.length > 0 ? filtered : allClassesDays;
+  }, [allClassesDays, allClassesRows, visibleAllClasses]);
 
   function goCurrentWeek() {
     const todayIdx = findTodayWeekIndex(semesterWeeks);
@@ -763,6 +832,17 @@ export default function ScheduleGrid() {
     <div>
       <h1>Thời khóa biểu</h1>
 
+      <div className="filter-bar">
+        <button type="button" className={viewMode === "byClass" ? "bg-brand-light" : ""} onClick={() => setViewMode("byClass")}>
+          Theo lớp
+        </button>
+        <button type="button" className={viewMode === "allClasses" ? "bg-brand-light" : ""} onClick={() => setViewMode("allClasses")}>
+          Tất cả các lớp
+        </button>
+      </div>
+
+      {viewMode === "byClass" && (
+      <>
       <div className="filter-bar">
         <select value={filters.classId} onChange={(e) => setFilters({ classId: e.target.value, semesterId: "" })}>
           <option value="">-- Tất cả lớp --</option>
@@ -1221,6 +1301,104 @@ export default function ScheduleGrid() {
             </div>
           )}
         </>
+      )}
+      </>
+      )}
+
+      {viewMode === "allClasses" && (
+      <div>
+        <div className="filter-bar">
+          <select value={allClassesCohortId} onChange={(e) => setAllClassesCohortId(e.target.value)}>
+            <option value="">-- Chọn Khóa học --</option>
+            {cohorts.filter((c) => c.IsActive).map((c) => <option key={c.CohortId} value={c.CohortId}>{c.CohortName}</option>)}
+          </select>
+          <select value={allClassesTrainingMode} onChange={(e) => setAllClassesTrainingMode(e.target.value)} disabled={!allClassesCohortId}>
+            <option value="">-- Tất cả hệ đào tạo --</option>
+            <option value="CQ">Chính quy (CQ)</option>
+            <option value="LT">Liên thông (LT)</option>
+          </select>
+        </div>
+
+        {!allClassesCohortId ? (
+          <p className="hint">Vui lòng chọn Khóa học để xem thời khóa biểu tổng hợp toàn trường theo tuần.</p>
+        ) : visibleAllClasses.length === 0 ? (
+          <p className="hint">Khóa này chưa có lớp nào đang sử dụng (hoặc không có lớp nào khớp bộ lọc Hệ đào tạo).</p>
+        ) : (
+          <>
+            <div className="calendar-toolbar">
+              <div className="calendar-nav">
+                <button type="button" onClick={() => setAllClassesWeekStart((d) => addDays(d, -7))}>‹</button>
+                <span className="calendar-title">
+                  Tuần từ {fmtDDMMYYYY(allClassesWeekStart)} - {fmtDDMMYYYY(addDays(allClassesWeekStart, 6))}
+                </span>
+                <button type="button" onClick={() => setAllClassesWeekStart((d) => addDays(d, 7))}>›</button>
+                <button type="button" onClick={() => setAllClassesWeekStart(startOfWeek(new Date()))}>Tuần hiện tại</button>
+              </div>
+            </div>
+
+            <div className="calendar-grid-wrap">
+              <table className="calendar-grid-table">
+                <thead>
+                  <tr>
+                    <th colSpan={2} className="calendar-grid-period-col">Buổi</th>
+                    {visibleAllClasses.map((c) => (
+                      <th key={c.ClassId}>
+                        {c.ClassName}
+                        <div className="text-[11px] font-normal text-gray-400">{trainingModeLabel(c.TrainingMode)} · {c.ClassSize} SV</div>
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {allClassesVisibleDays.flatMap((day) => {
+                    const dateKey = toDateKey(day);
+                    return sessions.map((session, sessionIdx) => (
+                      <tr key={`${dateKey}-${session.SessionId}`}>
+                        {sessionIdx === 0 && (
+                          <td rowSpan={sessions.length} className={`calendar-grid-period-col ${dateKey === todayKey ? "text-brand" : ""}`}>
+                            <div className="font-medium">{WEEKDAY_LABELS[(day.getDay() + 6) % 7]}</div>
+                            <div className="text-[11px] text-gray-400">{fmtDDMM(day)}</div>
+                          </td>
+                        )}
+                        <td className="calendar-grid-period-col">
+                          <div className="font-medium text-gray-700">{session.SessionName}</div>
+                          <div className="text-[11px] text-gray-400">{session.StartTime}–{session.EndTime}</div>
+                        </td>
+                        {visibleAllClasses.map((cls) => {
+                          const events = allClassesGrid.get(cls.ClassId)?.get(dateKey)?.get(session.SessionId) || [];
+                          const groups = groupMergedEvents(events);
+                          return (
+                            <td key={cls.ClassId} className="calendar-grid-event">
+                              {groups.length > 0 && (
+                                <div className="calendar-grid-event-inner">
+                                  {groups.map((g) => {
+                                    const ev = g.events[0];
+                                    const color = colorForId(ev.SubjectId);
+                                    return (
+                                      <div key={g.key} className="calendar-event-card" style={{ background: color.bg, color: color.text }}>
+                                        <div className="calendar-event-title">
+                                          {g.isMerged && <span title="Buổi ghép lớp">🔗 </span>}{ev.SubjectName}
+                                          {ev.GroupLabel && <span title="Buổi tách nhóm"> · {ev.GroupLabel}</span>}
+                                        </div>
+                                        <div className="calendar-event-sub">{ev.RoomName}</div>
+                                        {ev.Teachers && <div className="calendar-event-sub">{ev.Teachers}</div>}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ));
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
       )}
     </div>
   );

@@ -47,13 +47,16 @@ interface ScheduleBody {
 
 export async function list(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { semesterId, classId, teacherId, roomId, from, to } = req.query as Record<string, string | undefined>;
+    const { semesterId, classId, cohortId, teacherId, roomId, from, to } = req.query as Record<string, string | undefined>;
     const pool = await getPool();
     const request = pool.request();
 
     let where = "WHERE 1=1";
     if (semesterId) { request.input("semesterId", sql.Int, semesterId); where += " AND s.SemesterId=@semesterId"; }
     if (classId) { request.input("classId", sql.Int, classId); where += " AND s.ClassId=@classId"; }
+    // Việc AU: chế độ xem "Tất cả các lớp" cần lấy lịch của NHIỀU lớp cùng khóa trong 1 lần gọi
+    // (thay vì gọi riêng từng lớp) — lọc qua Classes.CohortId (đã JOIN sẵn c bên dưới).
+    if (cohortId) { request.input("cohortId", sql.Int, cohortId); where += " AND c.CohortId=@cohortId"; }
     if (roomId) { request.input("roomId", sql.Int, roomId); where += " AND s.RoomId=@roomId"; }
     if (from) { request.input("from", sql.Date, from); where += " AND s.ScheduleDate>=@from"; }
     if (to) { request.input("to", sql.Date, to); where += " AND s.ScheduleDate<=@to"; }
