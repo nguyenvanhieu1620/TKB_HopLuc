@@ -87,47 +87,71 @@ export async function list(req: AuthRequest, res: Response, next: NextFunction):
   }
 }
 
-// Việc AU (fix): tiến độ số tiết cho MỌI buổi đang có lịch của 1 Lớp — LŨY KẾ RIÊNG theo từng
-// buổi (không dùng chung 1 tổng cho mọi buổi cùng môn như bản trước, vì gây lỗi thêm buổi 2 làm
-// số hiện trên buổi 1 cũng nhảy theo) — dùng để hiện ngay trên từng thẻ buổi học trong lưới lịch.
+interface ClassPeriodProgressEntry {
+  scheduleId: number;
+  periodsThisSession: number;
+  cumulativePeriods: number;
+  subjectId: number;
+  totalPeriods: number | null;
+}
+
+async function getPeriodProgressForClass(classId: number, majorId: number, cohortId: number | null): Promise<ClassPeriodProgressEntry[]> {
+  const pool = await getPool();
+  const subjectsResult = await pool.request().input("classId", sql.Int, classId).query<{ SubjectId: number; TermNumber: number | null }>(`
+    SELECT s.SubjectId, MAX(sem.TermNumber) AS TermNumber
+    FROM Schedule s
+    LEFT JOIN Semesters sem ON sem.SemesterId = s.SemesterId
+    WHERE s.ClassId = @classId
+    GROUP BY s.SubjectId
+  `);
+
+  return (
+    await Promise.all(
+      subjectsResult.recordset.map(async (row) => {
+        const [totalPeriods, timeline] = await Promise.all([
+          getTotalPeriodsForSubject(majorId, row.SubjectId, cohortId, row.TermNumber),
+          getPeriodTimelineForSubject(classId, row.SubjectId),
+        ]);
+        return timeline.map((entry) => ({ ...entry, subjectId: row.SubjectId, totalPeriods }));
+      })
+    )
+  ).flat();
+}
+
+// Việc AU (fix): tiến độ số tiết cho MỌI buổi đang có lịch của 1 Lớp (hoặc cả 1 Khóa, dùng cho chế
+// độ xem "Tất cả các lớp") — LŨY KẾ RIÊNG theo từng buổi (không dùng chung 1 tổng cho mọi buổi
+// cùng môn như bản trước, vì gây lỗi thêm buổi 2 làm số hiện trên buổi 1 cũng nhảy theo).
 export async function periodProgressByClass(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { classId } = req.query as Record<string, string | undefined>;
-    if (!classId) {
-      res.status(400).json({ message: "Thiếu classId" });
+    const { classId, cohortId } = req.query as Record<string, string | undefined>;
+    if (!classId && !cohortId) {
+      res.status(400).json({ message: "Thiếu classId hoặc cohortId" });
       return;
     }
     const pool = await getPool();
 
-    const classResult = await pool.request().input("classId", sql.Int, classId).query<{ MajorId: number; CohortId: number | null }>(
-      `SELECT MajorId, CohortId FROM Classes WHERE ClassId = @classId`
-    );
-    const classInfo = classResult.recordset[0];
-    if (!classInfo) {
-      res.status(404).json({ message: "Không tìm thấy lớp" });
+    if (classId) {
+      const classResult = await pool.request().input("classId", sql.Int, classId).query<{ MajorId: number; CohortId: number | null }>(
+        `SELECT MajorId, CohortId FROM Classes WHERE ClassId = @classId`
+      );
+      const classInfo = classResult.recordset[0];
+      if (!classInfo) {
+        res.status(404).json({ message: "Không tìm thấy lớp" });
+        return;
+      }
+      const progress = await getPeriodProgressForClass(Number(classId), classInfo.MajorId, classInfo.CohortId);
+      res.json(progress);
       return;
     }
 
-    const subjectsResult = await pool.request().input("classId", sql.Int, classId).query<{ SubjectId: number; TermNumber: number | null }>(`
-      SELECT s.SubjectId, MAX(sem.TermNumber) AS TermNumber
-      FROM Schedule s
-      LEFT JOIN Semesters sem ON sem.SemesterId = s.SemesterId
-      WHERE s.ClassId = @classId
-      GROUP BY s.SubjectId
-    `);
-
+    const classesResult = await pool.request().input("cohortId", sql.Int, cohortId).query<{ ClassId: number; MajorId: number; CohortId: number | null }>(
+      `SELECT ClassId, MajorId, CohortId FROM Classes WHERE CohortId = @cohortId AND IsActive = 1`
+    );
     const progress = (
       await Promise.all(
-        subjectsResult.recordset.map(async (row) => {
-          const [totalPeriods, timeline] = await Promise.all([
-            getTotalPeriodsForSubject(classInfo.MajorId, row.SubjectId, classInfo.CohortId, row.TermNumber),
-            getPeriodTimelineForSubject(Number(classId), row.SubjectId),
-          ]);
-          return timeline.map((entry) => ({ ...entry, subjectId: row.SubjectId, totalPeriods }));
-        })
+        classesResult.recordset.map((c) => getPeriodProgressForClass(c.ClassId, c.MajorId, c.CohortId))
       )
     ).flat();
-
     res.json(progress);
   } catch (err) {
     next(err);

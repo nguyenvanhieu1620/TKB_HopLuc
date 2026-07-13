@@ -154,6 +154,30 @@ function groupMergedEvents(events: ScheduleItem[]): EventGroup[] {
   return groups;
 }
 
+// Nội dung bên trong 1 thẻ buổi học — dùng chung cho cả chế độ "Theo lớp" và "Tất cả các lớp" để
+// 2 chế độ luôn hiện ĐẦY ĐỦ cùng 1 loại thông tin (Môn/Lớp/Phòng/GV/tiến độ số tiết), không lệch nhau.
+function EventCardContent({ ev, g, progress }: { ev: ScheduleItem; g: EventGroup; progress?: SchedulePeriodProgress }) {
+  const classNames = g.events.map((e) => e.ClassName).join(", ");
+  return (
+    <>
+      <div className="calendar-event-title">
+        {g.isMerged && <span title="Buổi ghép lớp">🔗 </span>}{ev.SubjectName}
+        {ev.GroupLabel && <span title="Buổi tách nhóm"> · {ev.GroupLabel}</span>}
+      </div>
+      <div className="calendar-event-sub">{classNames} · {ev.RoomName}</div>
+      {ev.Teachers && <div className="calendar-event-sub">{ev.Teachers}</div>}
+      {progress && (
+        <>
+          <div className="calendar-event-sub">Số tiết buổi này: {progress.periodsThisSession} tiết</div>
+          <div className="calendar-event-sub">
+            Lũy kế: {progress.cumulativePeriods}{progress.totalPeriods != null ? `/${progress.totalPeriods}` : ""} tiết
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
 export default function ScheduleGrid() {
   const { isAdmin } = useAuth();
   const [rows, setRows] = useState<ScheduleItem[]>([]);
@@ -204,6 +228,7 @@ export default function ScheduleGrid() {
   const [allClassesTrainingMode, setAllClassesTrainingMode] = useState("");
   const [allClassesWeekStart, setAllClassesWeekStart] = useState(() => startOfWeek(new Date()));
   const [allClassesRows, setAllClassesRows] = useState<ScheduleItem[]>([]);
+  const [allClassesPeriodProgress, setAllClassesPeriodProgress] = useState<Record<number, SchedulePeriodProgress>>({});
 
   const selectedSemester = useMemo(
     () => semesters.find((s) => String(s.SemesterId) === filters.semesterId) || null,
@@ -444,12 +469,17 @@ export default function ScheduleGrid() {
   async function loadAllClassesSchedule() {
     if (!allClassesCohortId) {
       setAllClassesRows([]);
+      setAllClassesPeriodProgress({});
       return;
     }
     const from = toDateKey(allClassesWeekStart);
     const to = toDateKey(addDays(allClassesWeekStart, 6));
-    const res = await axiosClient.get<ScheduleItem[]>("/schedule", { params: { cohortId: allClassesCohortId, from, to } });
-    setAllClassesRows(res.data);
+    const [scheduleRes, progressRes] = await Promise.all([
+      axiosClient.get<ScheduleItem[]>("/schedule", { params: { cohortId: allClassesCohortId, from, to } }),
+      axiosClient.get<SchedulePeriodProgress[]>("/schedule/period-progress", { params: { cohortId: allClassesCohortId } }),
+    ]);
+    setAllClassesRows(scheduleRes.data);
+    setAllClassesPeriodProgress(Object.fromEntries(progressRes.data.map((p) => [p.scheduleId, p])));
   }
   useEffect(() => {
     if (viewMode === "allClasses") loadAllClassesSchedule();
@@ -1240,27 +1270,10 @@ export default function ScheduleGrid() {
                             {groups.map((g) => {
                               const ev = g.events[0];
                               const color = colorForId(ev.SubjectId);
-                              const classNames = g.events.map((e) => e.ClassName).join(", ");
                               const scheduleIds = g.events.map((e) => e.ScheduleId);
                               return (
                                 <div key={g.key} className="calendar-event-card" style={{ background: color.bg, color: color.text }}>
-                                  <div className="calendar-event-title">
-                                    {g.isMerged && <span title="Buổi ghép lớp">🔗 </span>}{ev.SubjectName}
-                                    {ev.GroupLabel && <span title="Buổi tách nhóm"> · {ev.GroupLabel}</span>}
-                                  </div>
-                                  <div className="calendar-event-sub">{classNames} · {ev.RoomName}</div>
-                                  {ev.Teachers && <div className="calendar-event-sub">{ev.Teachers}</div>}
-                                  {periodProgress[ev.ScheduleId] && (
-                                    <>
-                                      <div className="calendar-event-sub">
-                                        Số tiết buổi này: {periodProgress[ev.ScheduleId].periodsThisSession} tiết
-                                      </div>
-                                      <div className="calendar-event-sub">
-                                        Lũy kế: {periodProgress[ev.ScheduleId].cumulativePeriods}
-                                        {periodProgress[ev.ScheduleId].totalPeriods != null ? `/${periodProgress[ev.ScheduleId].totalPeriods}` : ""} tiết
-                                      </div>
-                                    </>
-                                  )}
+                                  <EventCardContent ev={ev} g={g} progress={periodProgress[ev.ScheduleId]} />
                                   {isAdmin && (
                                     g.isMerged
                                       ? <button className="calendar-event-delete mt-auto self-start" onClick={() => handleDeleteGroup(scheduleIds)}>Xóa cả buổi ghép</button>
@@ -1397,12 +1410,7 @@ export default function ScheduleGrid() {
                                     const color = colorForId(ev.SubjectId);
                                     return (
                                       <div key={g.key} className="calendar-event-card" style={{ background: color.bg, color: color.text }}>
-                                        <div className="calendar-event-title">
-                                          {g.isMerged && <span title="Buổi ghép lớp">🔗 </span>}{ev.SubjectName}
-                                          {ev.GroupLabel && <span title="Buổi tách nhóm"> · {ev.GroupLabel}</span>}
-                                        </div>
-                                        <div className="calendar-event-sub">{ev.RoomName}</div>
-                                        {ev.Teachers && <div className="calendar-event-sub">{ev.Teachers}</div>}
+                                        <EventCardContent ev={ev} g={g} progress={allClassesPeriodProgress[ev.ScheduleId]} />
                                       </div>
                                     );
                                   })}
