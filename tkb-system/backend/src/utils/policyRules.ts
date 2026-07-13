@@ -194,28 +194,13 @@ export async function getPeriodMinutes(roomType: string): Promise<number> {
   return getPolicyValue("TheoryPeriodMinutes");
 }
 
-interface PeriodProgressParams {
-  classId: number;
-  subjectId: number;
-  majorId: number;
-  cohortId: number | null;
-  termNumber: number | null;
-}
-interface PeriodProgressResult {
-  totalPeriods: number | null;
-  scheduledPeriods: number;
-}
-
-// Việc AU: khi sửa 1 buổi học đã xếp, hiện tiến độ "đã xếp X / tổng Y tiết" cho đúng cặp Lớp +
-// Môn đó — Y lấy từ Khung chương trình (ưu tiên dòng ghi đè riêng theo Khóa, giống
-// curriculumItemController.list), fallback về tổng giờ mặc định khai báo trên Subject nếu môn
-// chưa có trong khung chương trình. X cộng dồn TẤT CẢ buổi đã xếp cho Lớp+Môn này, quy đổi theo
-// độ dài tiết của TỪNG buổi (theo loại phòng buổi đó dùng) để không cộng nhầm phút thô.
-export async function getSubjectPeriodProgress({
-  classId, subjectId, majorId, cohortId, termNumber,
-}: PeriodProgressParams): Promise<PeriodProgressResult> {
+// Việc AU (fix): tổng số tiết CHUẨN của 1 Môn trong Khung chương trình của 1 Lớp — ưu tiên dòng
+// ghi đè riêng theo Khóa (giống curriculumItemController.list), fallback về tổng giờ mặc định
+// khai báo trên Subject nếu môn chưa có trong khung chương trình.
+export async function getTotalPeriodsForSubject(
+  majorId: number, subjectId: number, cohortId: number | null, termNumber: number | null
+): Promise<number | null> {
   const pool = await getPool();
-
   let totalPeriods: number | null = null;
   if (termNumber != null) {
     const ciResult = await pool
@@ -241,28 +226,49 @@ export async function getSubjectPeriodProgress({
       .query<{ Total: number }>(`SELECT TheoryHours + PracticeHours + ExamHours AS Total FROM Subjects WHERE SubjectId = @subjectId`);
     totalPeriods = subResult.recordset[0]?.Total ?? null;
   }
+  return totalPeriods;
+}
 
+export interface PeriodTimelineEntry {
+  scheduleId: number;
+  periodsThisSession: number;
+  cumulativePeriods: number;
+}
+
+// Việc AU (fix): mỗi buổi trong 1 Lớp + 1 Môn có tiến độ LŨY KẾ RIÊNG theo đúng thứ tự thời gian
+// của nó (buổi diễn ra trước cộng dồn ít hơn buổi diễn ra sau) — KHÔNG dùng chung 1 tổng cho mọi
+// buổi như trước (gây lỗi: thêm buổi 2 làm số hiện trên buổi 1 cũng nhảy theo). Quy đổi theo độ
+// dài tiết của TỪNG buổi (theo loại phòng buổi đó dùng) để không cộng nhầm phút thô.
+export async function getPeriodTimelineForSubject(classId: number, subjectId: number): Promise<PeriodTimelineEntry[]> {
+  const pool = await getPool();
   const rowsResult = await pool
     .request()
     .input("classId", sql.Int, classId)
     .input("subjectId", sql.Int, subjectId)
-    .query<{ RoomType: string; StartTime: string; EndTime: string }>(`
-      SELECT r.RoomType, CONVERT(VARCHAR(5), s.StartTime, 108) AS StartTime, CONVERT(VARCHAR(5), s.EndTime, 108) AS EndTime
+    .query<{ ScheduleId: number; RoomType: string; StartTime: string; EndTime: string }>(`
+      SELECT s.ScheduleId, r.RoomType, CONVERT(VARCHAR(5), s.StartTime, 108) AS StartTime, CONVERT(VARCHAR(5), s.EndTime, 108) AS EndTime
       FROM Schedule s
       INNER JOIN Rooms r ON r.RoomId = s.RoomId
       WHERE s.ClassId = @classId AND s.SubjectId = @subjectId
+      ORDER BY s.ScheduleDate, s.StartTime, s.ScheduleId
     `);
 
   const periodMinutesCache = new Map<string, number>();
-  let scheduledPeriods = 0;
+  let cumulative = 0;
+  const timeline: PeriodTimelineEntry[] = [];
   for (const row of rowsResult.recordset) {
     let periodMinutes = periodMinutesCache.get(row.RoomType);
     if (periodMinutes === undefined) {
       periodMinutes = await getPeriodMinutes(row.RoomType);
       periodMinutesCache.set(row.RoomType, periodMinutes);
     }
-    scheduledPeriods += diffMinutes(row.StartTime, row.EndTime) / periodMinutes;
+    const periods = diffMinutes(row.StartTime, row.EndTime) / periodMinutes;
+    cumulative += periods;
+    timeline.push({
+      scheduleId: row.ScheduleId,
+      periodsThisSession: Math.round(periods * 10) / 10,
+      cumulativePeriods: Math.round(cumulative * 10) / 10,
+    });
   }
-
-  return { totalPeriods, scheduledPeriods: Math.round(scheduledPeriods * 10) / 10 };
+  return timeline;
 }

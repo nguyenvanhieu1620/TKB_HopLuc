@@ -189,7 +189,8 @@ export interface ScheduleItem {
 }
 
 // Việc AU: chi tiết đầy đủ 1 buổi học (dùng khi Sửa) — kèm TeacherId thật (không chỉ tên gộp
-// chuỗi như ScheduleItem) và tiến độ số tiết đã xếp/tổng số tiết chuẩn của môn ở lớp này.
+// chuỗi như ScheduleItem) và tiến độ số tiết LŨY KẾ ĐẾN ĐÚNG BUỔI NÀY (không phải tổng chung cho
+// mọi buổi cùng môn — mỗi buổi có tiến độ riêng theo đúng thứ tự thời gian của nó).
 export interface ScheduleDetail {
   ScheduleId: number;
   ClassId: number;
@@ -207,7 +208,18 @@ export interface ScheduleDetail {
   GroupLabel: string | null;
   teacherIds: number[];
   totalPeriods: number | null;
-  scheduledPeriods: number;
+  periodsThisSession: number;
+  cumulativePeriods: number;
+}
+
+// Việc AU (fix): tiến độ số tiết của 1 buổi cụ thể trong lưới lịch — trả theo từng ScheduleId
+// (không phải theo SubjectId dùng chung cho mọi buổi cùng môn).
+export interface SchedulePeriodProgress {
+  scheduleId: number;
+  subjectId: number;
+  periodsThisSession: number;
+  cumulativePeriods: number;
+  totalPeriods: number | null;
 }
 
 export type ExamType = "TuLuan" | "TracNghiem" | "VanDap" | "ThucHanh";

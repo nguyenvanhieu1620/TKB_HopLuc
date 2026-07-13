@@ -2,7 +2,7 @@ import { Response, NextFunction } from "express";
 import { sql, getPool } from "../config/db";
 import { checkScheduleConflict, findHoliday } from "../utils/conflictCheck";
 import { checkTrainingModeRule, getClassTrainingMode } from "../utils/trainingModeCheck";
-import { checkRoomCapacity, checkSessionLength, checkDailyHoursLimit, getClassSize, getSubjectPeriodProgress } from "../utils/policyRules";
+import { checkRoomCapacity, checkSessionLength, checkDailyHoursLimit, getClassSize, getTotalPeriodsForSubject, getPeriodTimelineForSubject } from "../utils/policyRules";
 import { writeAuditLog } from "../utils/auditLog";
 import { notifyTeachers } from "../utils/notify";
 import { AuthRequest } from "../types";
@@ -84,8 +84,9 @@ export async function list(req: AuthRequest, res: Response, next: NextFunction):
   }
 }
 
-// Việc AU (bổ sung): tiến độ số tiết đã xếp/tổng số tiết cho MỌI môn đang có lịch của 1 Lớp —
-// dùng để hiện ngay trên từng thẻ buổi học trong lưới lịch (không phải chỉ khi mở form Sửa).
+// Việc AU (fix): tiến độ số tiết cho MỌI buổi đang có lịch của 1 Lớp — LŨY KẾ RIÊNG theo từng
+// buổi (không dùng chung 1 tổng cho mọi buổi cùng môn như bản trước, vì gây lỗi thêm buổi 2 làm
+// số hiện trên buổi 1 cũng nhảy theo) — dùng để hiện ngay trên từng thẻ buổi học trong lưới lịch.
 export async function periodProgressByClass(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   try {
     const { classId } = req.query as Record<string, string | undefined>;
@@ -112,15 +113,17 @@ export async function periodProgressByClass(req: AuthRequest, res: Response, nex
       GROUP BY s.SubjectId
     `);
 
-    const progress = await Promise.all(
-      subjectsResult.recordset.map(async (row) => {
-        const result = await getSubjectPeriodProgress({
-          classId: Number(classId), subjectId: row.SubjectId, majorId: classInfo.MajorId,
-          cohortId: classInfo.CohortId, termNumber: row.TermNumber,
-        });
-        return { subjectId: row.SubjectId, ...result };
-      })
-    );
+    const progress = (
+      await Promise.all(
+        subjectsResult.recordset.map(async (row) => {
+          const [totalPeriods, timeline] = await Promise.all([
+            getTotalPeriodsForSubject(classInfo.MajorId, row.SubjectId, classInfo.CohortId, row.TermNumber),
+            getPeriodTimelineForSubject(Number(classId), row.SubjectId),
+          ]);
+          return timeline.map((entry) => ({ ...entry, subjectId: row.SubjectId, totalPeriods }));
+        })
+      )
+    ).flat();
 
     res.json(progress);
   } catch (err) {
@@ -164,12 +167,17 @@ export async function getById(req: AuthRequest, res: Response, next: NextFunctio
     );
     const teacherIds = teacherResult.recordset.map((t) => t.TeacherId);
 
-    const progress = await getSubjectPeriodProgress({
-      classId: row.ClassId, subjectId: row.SubjectId, majorId: row.MajorId,
-      cohortId: row.CohortId, termNumber: row.TermNumber,
-    });
+    const [totalPeriods, timeline] = await Promise.all([
+      getTotalPeriodsForSubject(row.MajorId, row.SubjectId, row.CohortId, row.TermNumber),
+      getPeriodTimelineForSubject(row.ClassId, row.SubjectId),
+    ]);
+    const thisEntry = timeline.find((t) => t.scheduleId === row.ScheduleId);
 
-    res.json({ ...row, teacherIds, ...progress });
+    res.json({
+      ...row, teacherIds, totalPeriods,
+      periodsThisSession: thisEntry?.periodsThisSession ?? 0,
+      cumulativePeriods: thisEntry?.cumulativePeriods ?? 0,
+    });
   } catch (err) {
     next(err);
   }

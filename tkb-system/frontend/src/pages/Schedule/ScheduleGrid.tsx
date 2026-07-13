@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import axiosClient from "../../api/axiosClient";
 import { useAuth } from "../../context/AuthContext";
-import { ScheduleItem, ScheduleDetail, Semester, SchoolClass, Subject, Room, Teacher, Session, SchedulingPolicyItem, ApiErrorResponse, CopyWeekResult, CurriculumItem } from "../../types";
+import { ScheduleItem, ScheduleDetail, SchedulePeriodProgress, Semester, SchoolClass, Subject, Room, Teacher, Session, SchedulingPolicyItem, ApiErrorResponse, CopyWeekResult, CurriculumItem } from "../../types";
 import { AxiosError } from "axios";
 import { addDays, addMinutesToTime, colorForId, diffMinutesBetweenTimes, findTodayWeekIndex, getWeeksInSemester, parseDateKey, startOfWeek, toDateKey, WEEKDAY_LABELS } from "../../../utils/calendar";
 import { buildWorkbook, downloadWorkbook } from "../../../utils/excel";
@@ -157,7 +157,9 @@ function groupMergedEvents(events: ScheduleItem[]): EventGroup[] {
 export default function ScheduleGrid() {
   const { isAdmin } = useAuth();
   const [rows, setRows] = useState<ScheduleItem[]>([]);
-  const [periodProgress, setPeriodProgress] = useState<Record<number, { totalPeriods: number | null; scheduledPeriods: number }>>({});
+  // Việc AU (fix): key theo ScheduleId (không phải SubjectId) — mỗi buổi có tiến độ lũy kế RIÊNG
+  // theo đúng thứ tự thời gian của nó, không dùng chung 1 tổng cho mọi buổi cùng môn.
+  const [periodProgress, setPeriodProgress] = useState<Record<number, SchedulePeriodProgress>>({});
   const [semesters, setSemesters] = useState<Semester[]>([]);
   const [classes, setClasses] = useState<SchoolClass[]>([]);
   const [subjects, setSubjects] = useState<Subject[]>([]);
@@ -172,7 +174,7 @@ export default function ScheduleGrid() {
   // Việc AU: Sửa 1 buổi đã xếp — dùng lại chính form "Xếp buổi học mới", chỉ khóa Lớp/Đợt
   // học/Môn học (không cho đổi sang buổi khác) và hiện tiến độ số tiết đã xếp/tổng số tiết môn.
   const [editingScheduleId, setEditingScheduleId] = useState<number | null>(null);
-  const [editProgress, setEditProgress] = useState<{ totalPeriods: number | null; scheduledPeriods: number } | null>(null);
+  const [editProgress, setEditProgress] = useState<{ totalPeriods: number | null; cumulativePeriods: number } | null>(null);
 
   const [mergeForm, setMergeForm] = useState<MergeForm>(emptyMergeForm);
   const [mergeError, setMergeError] = useState("");
@@ -352,15 +354,13 @@ export default function ScheduleGrid() {
     const res = await axiosClient.get<ScheduleItem[]>("/schedule", { params });
     setRows(res.data);
 
-    // Việc AU: tiến độ số tiết đã xếp/tổng số tiết theo Môn, hiện ngay trên từng thẻ buổi học —
+    // Việc AU: tiến độ số tiết lũy kế RIÊNG cho từng buổi, hiện ngay trên từng thẻ buổi học —
     // nạp lại cùng lúc với lịch để luôn khớp dữ liệu mới nhất sau khi thêm/sửa/xóa buổi.
     if (filters.classId) {
-      const progressRes = await axiosClient.get<{ subjectId: number; totalPeriods: number | null; scheduledPeriods: number }[]>(
+      const progressRes = await axiosClient.get<SchedulePeriodProgress[]>(
         "/schedule/period-progress", { params: { classId: filters.classId } }
       );
-      setPeriodProgress(Object.fromEntries(
-        progressRes.data.map((p) => [p.subjectId, { totalPeriods: p.totalPeriods, scheduledPeriods: p.scheduledPeriods }])
-      ));
+      setPeriodProgress(Object.fromEntries(progressRes.data.map((p) => [p.scheduleId, p])));
     } else {
       setPeriodProgress({});
     }
@@ -517,7 +517,7 @@ export default function ScheduleGrid() {
       note: detail.Note || "",
       isMakeup: false,
     });
-    setEditProgress({ totalPeriods: detail.totalPeriods, scheduledPeriods: detail.scheduledPeriods });
+    setEditProgress({ totalPeriods: detail.totalPeriods, cumulativePeriods: detail.cumulativePeriods });
     setEditingScheduleId(scheduleId);
     setShowForm(true);
   }
@@ -804,8 +804,8 @@ export default function ScheduleGrid() {
               {" "}— không đổi được Lớp/Kỳ/Môn khi sửa, chỉ chỉnh Phòng/Giảng viên/Ngày/Ca/Số tiết/Ghi chú. Cần đổi Lớp hoặc Môn thì xóa buổi này và xếp lại buổi mới.
               {editProgress && (
                 <div className="mt-1">
-                  Số tiết buổi này: <b>{form.periodCount || "?"}</b> tiết — Đã xếp cho môn này ở lớp:{" "}
-                  <b>{editProgress.scheduledPeriods}{editProgress.totalPeriods != null ? ` / ${editProgress.totalPeriods}` : ""}</b> tiết
+                  Số tiết buổi này: <b>{form.periodCount || "?"}</b> tiết — Lũy kế đến hết buổi này:{" "}
+                  <b>{editProgress.cumulativePeriods}{editProgress.totalPeriods != null ? ` / ${editProgress.totalPeriods}` : ""}</b> tiết
                 </div>
               )}
             </div>
@@ -1161,10 +1161,10 @@ export default function ScheduleGrid() {
                                   </div>
                                   <div className="calendar-event-sub">{classNames} · {ev.RoomName}</div>
                                   {ev.Teachers && <div className="calendar-event-sub">{ev.Teachers}</div>}
-                                  {periodProgress[ev.SubjectId] && (
+                                  {periodProgress[ev.ScheduleId] && (
                                     <div className="calendar-event-sub">
-                                      Tiết: {periodProgress[ev.SubjectId].scheduledPeriods}
-                                      {periodProgress[ev.SubjectId].totalPeriods != null ? `/${periodProgress[ev.SubjectId].totalPeriods}` : ""}
+                                      Tiết: {periodProgress[ev.ScheduleId].cumulativePeriods}
+                                      {periodProgress[ev.ScheduleId].totalPeriods != null ? `/${periodProgress[ev.ScheduleId].totalPeriods}` : ""}
                                     </div>
                                   )}
                                   {isAdmin && (
