@@ -84,6 +84,50 @@ export async function list(req: AuthRequest, res: Response, next: NextFunction):
   }
 }
 
+// Việc AU (bổ sung): tiến độ số tiết đã xếp/tổng số tiết cho MỌI môn đang có lịch của 1 Lớp —
+// dùng để hiện ngay trên từng thẻ buổi học trong lưới lịch (không phải chỉ khi mở form Sửa).
+export async function periodProgressByClass(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { classId } = req.query as Record<string, string | undefined>;
+    if (!classId) {
+      res.status(400).json({ message: "Thiếu classId" });
+      return;
+    }
+    const pool = await getPool();
+
+    const classResult = await pool.request().input("classId", sql.Int, classId).query<{ MajorId: number; CohortId: number | null }>(
+      `SELECT MajorId, CohortId FROM Classes WHERE ClassId = @classId`
+    );
+    const classInfo = classResult.recordset[0];
+    if (!classInfo) {
+      res.status(404).json({ message: "Không tìm thấy lớp" });
+      return;
+    }
+
+    const subjectsResult = await pool.request().input("classId", sql.Int, classId).query<{ SubjectId: number; TermNumber: number | null }>(`
+      SELECT s.SubjectId, MAX(sem.TermNumber) AS TermNumber
+      FROM Schedule s
+      LEFT JOIN Semesters sem ON sem.SemesterId = s.SemesterId
+      WHERE s.ClassId = @classId
+      GROUP BY s.SubjectId
+    `);
+
+    const progress = await Promise.all(
+      subjectsResult.recordset.map(async (row) => {
+        const result = await getSubjectPeriodProgress({
+          classId: Number(classId), subjectId: row.SubjectId, majorId: classInfo.MajorId,
+          cohortId: classInfo.CohortId, termNumber: row.TermNumber,
+        });
+        return { subjectId: row.SubjectId, ...result };
+      })
+    );
+
+    res.json(progress);
+  } catch (err) {
+    next(err);
+  }
+}
+
 // Việc AU: chi tiết 1 buổi học để phục vụ form Sửa — kèm danh sách GiangVienId (list chỉ trả tên
 // gộp thành chuỗi, không đủ để prefill multi-select) và tiến độ số tiết đã xếp/tổng số tiết môn.
 export async function getById(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {

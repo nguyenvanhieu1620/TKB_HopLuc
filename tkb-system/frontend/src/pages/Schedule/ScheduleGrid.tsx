@@ -157,6 +157,7 @@ function groupMergedEvents(events: ScheduleItem[]): EventGroup[] {
 export default function ScheduleGrid() {
   const { isAdmin } = useAuth();
   const [rows, setRows] = useState<ScheduleItem[]>([]);
+  const [periodProgress, setPeriodProgress] = useState<Record<number, { totalPeriods: number | null; scheduledPeriods: number }>>({});
   const [semesters, setSemesters] = useState<Semester[]>([]);
   const [classes, setClasses] = useState<SchoolClass[]>([]);
   const [subjects, setSubjects] = useState<Subject[]>([]);
@@ -350,6 +351,19 @@ export default function ScheduleGrid() {
     if (filters.classId) params.classId = filters.classId;
     const res = await axiosClient.get<ScheduleItem[]>("/schedule", { params });
     setRows(res.data);
+
+    // Việc AU: tiến độ số tiết đã xếp/tổng số tiết theo Môn, hiện ngay trên từng thẻ buổi học —
+    // nạp lại cùng lúc với lịch để luôn khớp dữ liệu mới nhất sau khi thêm/sửa/xóa buổi.
+    if (filters.classId) {
+      const progressRes = await axiosClient.get<{ subjectId: number; totalPeriods: number | null; scheduledPeriods: number }[]>(
+        "/schedule/period-progress", { params: { classId: filters.classId } }
+      );
+      setPeriodProgress(Object.fromEntries(
+        progressRes.data.map((p) => [p.subjectId, { totalPeriods: p.totalPeriods, scheduledPeriods: p.scheduledPeriods }])
+      ));
+    } else {
+      setPeriodProgress({});
+    }
   }
 
   useEffect(() => { loadLookups(); }, []);
@@ -1147,6 +1161,12 @@ export default function ScheduleGrid() {
                                   </div>
                                   <div className="calendar-event-sub">{classNames} · {ev.RoomName}</div>
                                   {ev.Teachers && <div className="calendar-event-sub">{ev.Teachers}</div>}
+                                  {periodProgress[ev.SubjectId] && (
+                                    <div className="calendar-event-sub">
+                                      Tiết: {periodProgress[ev.SubjectId].scheduledPeriods}
+                                      {periodProgress[ev.SubjectId].totalPeriods != null ? `/${periodProgress[ev.SubjectId].totalPeriods}` : ""}
+                                    </div>
+                                  )}
                                   {isAdmin && (
                                     g.isMerged
                                       ? <button className="calendar-event-delete mt-auto self-start" onClick={() => handleDeleteGroup(scheduleIds)}>Xóa cả buổi ghép</button>
