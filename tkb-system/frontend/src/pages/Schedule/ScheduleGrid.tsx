@@ -1162,10 +1162,15 @@ export default function ScheduleGrid() {
                                   <div className="calendar-event-sub">{classNames} · {ev.RoomName}</div>
                                   {ev.Teachers && <div className="calendar-event-sub">{ev.Teachers}</div>}
                                   {periodProgress[ev.ScheduleId] && (
-                                    <div className="calendar-event-sub">
-                                      Tiết: {periodProgress[ev.ScheduleId].cumulativePeriods}
-                                      {periodProgress[ev.ScheduleId].totalPeriods != null ? `/${periodProgress[ev.ScheduleId].totalPeriods}` : ""}
-                                    </div>
+                                    <>
+                                      <div className="calendar-event-sub">
+                                        Số tiết buổi này: {periodProgress[ev.ScheduleId].periodsThisSession} tiết
+                                      </div>
+                                      <div className="calendar-event-sub">
+                                        Lũy kế: {periodProgress[ev.ScheduleId].cumulativePeriods}
+                                        {periodProgress[ev.ScheduleId].totalPeriods != null ? `/${periodProgress[ev.ScheduleId].totalPeriods}` : ""} tiết
+                                      </div>
+                                    </>
                                   )}
                                   {isAdmin && (
                                     g.isMerged
