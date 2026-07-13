@@ -1,9 +1,9 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import axiosClient from "../../api/axiosClient";
 import { useAuth } from "../../context/AuthContext";
-import { ScheduleItem, Semester, SchoolClass, Subject, Room, Teacher, Session, SchedulingPolicyItem, ApiErrorResponse, CopyWeekResult, CurriculumItem } from "../../types";
+import { ScheduleItem, ScheduleDetail, Semester, SchoolClass, Subject, Room, Teacher, Session, SchedulingPolicyItem, ApiErrorResponse, CopyWeekResult, CurriculumItem } from "../../types";
 import { AxiosError } from "axios";
-import { addDays, addMinutesToTime, colorForId, findTodayWeekIndex, getWeeksInSemester, parseDateKey, startOfWeek, toDateKey, WEEKDAY_LABELS } from "../../../utils/calendar";
+import { addDays, addMinutesToTime, colorForId, diffMinutesBetweenTimes, findTodayWeekIndex, getWeeksInSemester, parseDateKey, startOfWeek, toDateKey, WEEKDAY_LABELS } from "../../../utils/calendar";
 import { buildWorkbook, downloadWorkbook } from "../../../utils/excel";
 import { subjectLabel } from "../../../utils/text";
 
@@ -167,6 +167,11 @@ export default function ScheduleGrid() {
   const [form, setForm] = useState<ScheduleForm>(emptyForm);
   const [error, setError] = useState("");
   const [showForm, setShowForm] = useState(false);
+
+  // Việc AU: Sửa 1 buổi đã xếp — dùng lại chính form "Xếp buổi học mới", chỉ khóa Lớp/Đợt
+  // học/Môn học (không cho đổi sang buổi khác) và hiện tiến độ số tiết đã xếp/tổng số tiết môn.
+  const [editingScheduleId, setEditingScheduleId] = useState<number | null>(null);
+  const [editProgress, setEditProgress] = useState<{ totalPeriods: number | null; scheduledPeriods: number } | null>(null);
 
   const [mergeForm, setMergeForm] = useState<MergeForm>(emptyMergeForm);
   const [mergeError, setMergeError] = useState("");
@@ -442,10 +447,11 @@ export default function ScheduleGrid() {
       isMakeup: form.isMakeup,
     };
     try {
-      const res = await axiosClient.post<{ warning?: string }>("/schedule", payload);
+      const res = editingScheduleId
+        ? await axiosClient.put<{ warning?: string }>(`/schedule/${editingScheduleId}`, payload)
+        : await axiosClient.post<{ warning?: string }>("/schedule", payload);
       if (res.data.warning) alert(res.data.warning);
-      setForm(emptyForm);
-      setShowForm(false);
+      handleCancelEdit();
       loadSchedule();
     } catch (err) {
       const axiosErr = err as AxiosError<ApiErrorResponse>;
@@ -455,6 +461,51 @@ export default function ScheduleGrid() {
       if (conflict?.teacherConflicts?.length) msg += ` — Trùng giảng viên ${conflict.teacherConflicts.length} lần`;
       setError(msg);
     }
+  }
+
+  function handleCancelEdit() {
+    setEditingScheduleId(null);
+    setEditProgress(null);
+    setForm(emptyForm);
+    setShowForm(false);
+    setError("");
+  }
+
+  // Chỉ dọn trạng thái Sửa (không đụng tới form nếu đang KHÔNG sửa) — dùng khi chuyển sang tab
+  // Ghép lớp/Tách nhóm để tránh mở nhầm form Sửa còn treo, mà không xóa nhầm nháp form thường.
+  function clearEditingIfActive() {
+    if (!editingScheduleId) return;
+    setEditingScheduleId(null);
+    setEditProgress(null);
+    setForm(emptyForm);
+  }
+
+  // Việc AU: mở form Sửa cho 1 buổi đã xếp — nạp chi tiết (kèm GV đang dạy thật, không chỉ tên
+  // gộp chuỗi) và suy ra lại Ca/Số tiết từ StartTime/EndTime đã lưu để hiện đúng trên form.
+  async function handleOpenEdit(scheduleId: number) {
+    setShowMergeForm(false);
+    setShowGroupForm(false);
+    setError("");
+    const res = await axiosClient.get<ScheduleDetail>(`/schedule/${scheduleId}`);
+    const detail = res.data;
+    const session = sessions.find((s) => detail.StartTime >= s.StartTime && detail.StartTime < s.EndTime) || null;
+    const periodMinutes = periodMinutesForRoomType(detail.RoomType, policies);
+    const periods = Math.round(diffMinutesBetweenTimes(detail.StartTime, detail.EndTime) / periodMinutes);
+    setForm({
+      semesterId: "",
+      classId: String(detail.ClassId),
+      subjectId: String(detail.SubjectId),
+      roomId: String(detail.RoomId),
+      teacherIds: detail.teacherIds.map(String),
+      scheduleDate: detail.ScheduleDate.slice(0, 10),
+      sessionId: session ? String(session.SessionId) : "",
+      periodCount: periods > 0 ? String(periods) : "",
+      note: detail.Note || "",
+      isMakeup: false,
+    });
+    setEditProgress({ totalPeriods: detail.totalPeriods, scheduledPeriods: detail.scheduledPeriods });
+    setEditingScheduleId(scheduleId);
+    setShowForm(true);
   }
 
   async function handleMergeSubmit(e: FormEvent) {
@@ -639,6 +690,8 @@ export default function ScheduleGrid() {
   }
 
   function openNewFormForDaySession(dateKey: string, sessionId: number) {
+    setEditingScheduleId(null);
+    setEditProgress(null);
     setForm({ ...emptyForm, scheduleDate: dateKey, sessionId: String(sessionId) });
     setShowForm(true);
   }
@@ -712,13 +765,16 @@ export default function ScheduleGrid() {
         <button type="button" onClick={handleExportExcel}>Xuất Excel</button>
         {isAdmin && (
           <>
-            <button type="button" onClick={() => { setShowForm((v) => !v); setShowMergeForm(false); setShowGroupForm(false); setError(""); }}>
-              {showForm ? "Đóng form" : "+ Xếp buổi học mới"}
+            <button type="button" onClick={() => {
+              if (editingScheduleId) { handleCancelEdit(); return; }
+              setShowForm((v) => !v); setShowMergeForm(false); setShowGroupForm(false); setError("");
+            }}>
+              {editingScheduleId ? "Đóng form (hủy sửa)" : showForm ? "Đóng form" : "+ Xếp buổi học mới"}
             </button>
-            <button type="button" onClick={() => { setShowMergeForm((v) => !v); setShowForm(false); setShowGroupForm(false); setMergeError(""); }}>
+            <button type="button" onClick={() => { clearEditingIfActive(); setShowMergeForm((v) => !v); setShowForm(false); setShowGroupForm(false); setMergeError(""); }}>
               {showMergeForm ? "Đóng ghép lớp" : "🔗 Ghép lớp"}
             </button>
-            <button type="button" onClick={() => { setShowGroupForm((v) => !v); setShowForm(false); setShowMergeForm(false); setGroupError(""); }}>
+            <button type="button" onClick={() => { clearEditingIfActive(); setShowGroupForm((v) => !v); setShowForm(false); setShowMergeForm(false); setGroupError(""); }}>
               {showGroupForm ? "Đóng tách nhóm" : "🧩 Xếp theo nhóm"}
             </button>
           </>
@@ -727,29 +783,44 @@ export default function ScheduleGrid() {
 
       {isAdmin && showForm && (
         <form className="schedule-form" onSubmit={handleSubmit}>
-          <h3>Xếp buổi học mới</h3>
-          <div className="form-grid">
-            <div>
-              <select value={form.classId} onChange={(e) => setForm({ ...form, classId: e.target.value, semesterId: "", subjectId: "" })} required>
-                <option value="">Lớp</option>
-                {classes.map((c) => <option key={c.ClassId} value={c.ClassId}>{c.ClassName}</option>)}
-              </select>
-              {selectedFormClass && (
-                <div className="hint mt-1">
-                  Hệ đào tạo: <b>{trainingModeLabel(selectedFormClass.TrainingMode)}</b> — {trainingModeHint(selectedFormClass.TrainingMode)}
+          <h3>{editingScheduleId ? "Sửa buổi học" : "Xếp buổi học mới"}</h3>
+          {editingScheduleId ? (
+            <div className="hint mb-2">
+              Lớp <b>{selectedFormClass?.ClassName}</b> — Môn <b>{subjectLabel(subjects.find((s) => String(s.SubjectId) === form.subjectId) || { SubjectName: "?", SubjectCode: null, MajorName: null })}</b>
+              {" "}— không đổi được Lớp/Kỳ/Môn khi sửa, chỉ chỉnh Phòng/Giảng viên/Ngày/Ca/Số tiết/Ghi chú. Cần đổi Lớp hoặc Môn thì xóa buổi này và xếp lại buổi mới.
+              {editProgress && (
+                <div className="mt-1">
+                  Số tiết buổi này: <b>{form.periodCount || "?"}</b> tiết — Đã xếp cho môn này ở lớp:{" "}
+                  <b>{editProgress.scheduledPeriods}{editProgress.totalPeriods != null ? ` / ${editProgress.totalPeriods}` : ""}</b> tiết
                 </div>
               )}
             </div>
-            <select value={form.semesterId} onChange={(e) => setForm({ ...form, semesterId: e.target.value, subjectId: "" })}
-              required disabled={!form.classId}>
-              <option value="">{form.classId ? "Đợt học" : "-- Chọn lớp trước --"}</option>
-              {formSemesters.map((s) => <option key={s.SemesterId} value={s.SemesterId}>{s.SemesterName}</option>)}
-            </select>
-            <select value={form.subjectId} onChange={(e) => setForm({ ...form, subjectId: e.target.value })}
-              required disabled={!formCurriculumSubjectIds}>
-              <option value="">{formCurriculumSubjectIds ? "Môn học" : "-- Chọn Lớp và Kỳ trước --"}</option>
-              {formSubjects.map((s) => <option key={s.SubjectId} value={s.SubjectId}>{subjectLabel(s)}</option>)}
-            </select>
+          ) : (
+            <div className="form-grid">
+              <div>
+                <select value={form.classId} onChange={(e) => setForm({ ...form, classId: e.target.value, semesterId: "", subjectId: "" })} required>
+                  <option value="">Lớp</option>
+                  {classes.map((c) => <option key={c.ClassId} value={c.ClassId}>{c.ClassName}</option>)}
+                </select>
+                {selectedFormClass && (
+                  <div className="hint mt-1">
+                    Hệ đào tạo: <b>{trainingModeLabel(selectedFormClass.TrainingMode)}</b> — {trainingModeHint(selectedFormClass.TrainingMode)}
+                  </div>
+                )}
+              </div>
+              <select value={form.semesterId} onChange={(e) => setForm({ ...form, semesterId: e.target.value, subjectId: "" })}
+                required disabled={!form.classId}>
+                <option value="">{form.classId ? "Đợt học" : "-- Chọn lớp trước --"}</option>
+                {formSemesters.map((s) => <option key={s.SemesterId} value={s.SemesterId}>{s.SemesterName}</option>)}
+              </select>
+              <select value={form.subjectId} onChange={(e) => setForm({ ...form, subjectId: e.target.value })}
+                required disabled={!formCurriculumSubjectIds}>
+                <option value="">{formCurriculumSubjectIds ? "Môn học" : "-- Chọn Lớp và Kỳ trước --"}</option>
+                {formSubjects.map((s) => <option key={s.SubjectId} value={s.SubjectId}>{subjectLabel(s)}</option>)}
+              </select>
+            </div>
+          )}
+          <div className="form-grid">
             <div>
               <select value={form.roomId} onChange={(e) => setForm({ ...form, roomId: e.target.value })} required>
                 <option value="">Phòng</option>
@@ -793,7 +864,8 @@ export default function ScheduleGrid() {
               onChange={(e) => setForm({ ...form, isMakeup: e.target.checked })} />
             Đây là lịch học bù (bỏ qua cảnh báo ngày/buổi trái quy định hệ đào tạo)
           </label>
-          <button type="submit">Thêm buổi học</button>
+          <button type="submit">{editingScheduleId ? "Cập nhật buổi học" : "Thêm buổi học"}</button>
+          {editingScheduleId && <button type="button" onClick={handleCancelEdit}>Hủy sửa</button>}
           {error && <div className="error-text">{error}</div>}
         </form>
       )}
@@ -1077,8 +1149,13 @@ export default function ScheduleGrid() {
                                   {ev.Teachers && <div className="calendar-event-sub">{ev.Teachers}</div>}
                                   {isAdmin && (
                                     g.isMerged
-                                      ? <button className="calendar-event-delete" onClick={() => handleDeleteGroup(scheduleIds)}>Xóa cả buổi ghép</button>
-                                      : <button className="calendar-event-delete" onClick={() => handleDelete(ev.ScheduleId)}>Xóa</button>
+                                      ? <button className="calendar-event-delete mt-auto self-start" onClick={() => handleDeleteGroup(scheduleIds)}>Xóa cả buổi ghép</button>
+                                      : (
+                                        <div className="calendar-event-actions">
+                                          <button className="calendar-event-edit" onClick={() => handleOpenEdit(ev.ScheduleId)}>Sửa</button>
+                                          <button className="calendar-event-delete" onClick={() => handleDelete(ev.ScheduleId)}>Xóa</button>
+                                        </div>
+                                      )
                                   )}
                                 </div>
                               );

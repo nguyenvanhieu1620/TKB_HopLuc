@@ -2,7 +2,7 @@ import { Response, NextFunction } from "express";
 import { sql, getPool } from "../config/db";
 import { checkScheduleConflict, findHoliday } from "../utils/conflictCheck";
 import { checkTrainingModeRule, getClassTrainingMode } from "../utils/trainingModeCheck";
-import { checkRoomCapacity, checkSessionLength, checkDailyHoursLimit, getClassSize } from "../utils/policyRules";
+import { checkRoomCapacity, checkSessionLength, checkDailyHoursLimit, getClassSize, getSubjectPeriodProgress } from "../utils/policyRules";
 import { writeAuditLog } from "../utils/auditLog";
 import { notifyTeachers } from "../utils/notify";
 import { AuthRequest } from "../types";
@@ -79,6 +79,53 @@ export async function list(req: AuthRequest, res: Response, next: NextFunction):
       ORDER BY s.ScheduleDate, s.StartTime
     `);
     res.json(result.recordset);
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Việc AU: chi tiết 1 buổi học để phục vụ form Sửa — kèm danh sách GiangVienId (list chỉ trả tên
+// gộp thành chuỗi, không đủ để prefill multi-select) và tiến độ số tiết đã xếp/tổng số tiết môn.
+export async function getById(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { id } = req.params;
+    const pool = await getPool();
+    const result = await pool.request().input("id", sql.Int, id).query<{
+      ScheduleId: number; ClassId: number; ClassName: string; MajorId: number; CohortId: number | null;
+      SubjectId: number; SubjectName: string; RoomId: number; RoomName: string; RoomType: string;
+      ScheduleDate: string; StartTime: string; EndTime: string; Note: string | null;
+      MergedSessionId: number | null; GroupLabel: string | null; TermNumber: number | null;
+    }>(`
+      SELECT s.ScheduleId, s.ClassId, c.ClassName, c.MajorId, c.CohortId,
+             s.SubjectId, sub.SubjectName, s.RoomId, r.RoomName, r.RoomType,
+             CONVERT(VARCHAR(10), s.ScheduleDate, 23) AS ScheduleDate,
+             CONVERT(VARCHAR(5), s.StartTime, 108) AS StartTime,
+             CONVERT(VARCHAR(5), s.EndTime, 108) AS EndTime,
+             s.Note, s.MergedSessionId, s.GroupLabel, sem.TermNumber
+      FROM Schedule s
+      INNER JOIN Classes c ON c.ClassId = s.ClassId
+      INNER JOIN Subjects sub ON sub.SubjectId = s.SubjectId
+      INNER JOIN Rooms r ON r.RoomId = s.RoomId
+      LEFT JOIN Semesters sem ON sem.SemesterId = s.SemesterId
+      WHERE s.ScheduleId = @id
+    `);
+    const row = result.recordset[0];
+    if (!row) {
+      res.status(404).json({ message: "Không tìm thấy buổi học" });
+      return;
+    }
+
+    const teacherResult = await pool.request().input("id", sql.Int, id).query<{ TeacherId: number }>(
+      `SELECT TeacherId FROM ScheduleTeachers WHERE ScheduleId = @id`
+    );
+    const teacherIds = teacherResult.recordset.map((t) => t.TeacherId);
+
+    const progress = await getSubjectPeriodProgress({
+      classId: row.ClassId, subjectId: row.SubjectId, majorId: row.MajorId,
+      cohortId: row.CohortId, termNumber: row.TermNumber,
+    });
+
+    res.json({ ...row, teacherIds, ...progress });
   } catch (err) {
     next(err);
   }

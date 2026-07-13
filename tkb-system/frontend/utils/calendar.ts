@@ -39,6 +39,13 @@ export function addMinutesToTime(time: string, minutes: number): string {
   return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
 }
 
+// Số phút giữa 2 mốc giờ "HH:MM" cùng ngày (endTime luôn sau startTime trong 1 buổi học).
+export function diffMinutesBetweenTimes(startTime: string, endTime: string): number {
+  const [sh, sm] = startTime.split(":").map(Number);
+  const [eh, em] = endTime.split(":").map(Number);
+  return eh * 60 + em - (sh * 60 + sm);
+}
+
 export interface SemesterWeek {
   weekNumber: number;
   start: Date;

@@ -100,5 +100,7 @@
   .calendar-event-card { @apply rounded-lg p-2 text-xs relative shadow-sm transition-shadow duration-150 hover:shadow-md flex-1 flex flex-col; }
   .calendar-event-title { @apply font-semibold; }
   .calendar-event-sub { @apply opacity-85; }
-  .calendar-event-delete { @apply mt-auto self-start bg-white/60 text-[#a33] text-[11px] px-1.5 py-0.5 rounded; }
+  .calendar-event-actions { @apply mt-auto flex gap-1; }
+  .calendar-event-edit { @apply bg-white/60 text-[#2f5f8b] text-[11px] px-1.5 py-0.5 rounded; }
+  .calendar-event-delete { @apply bg-white/60 text-[#a33] text-[11px] px-1.5 py-0.5 rounded; }
 }

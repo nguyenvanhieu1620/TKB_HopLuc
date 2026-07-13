@@ -188,6 +188,28 @@ export interface ScheduleItem {
   Teachers: string | null;
 }
 
+// Việc AU: chi tiết đầy đủ 1 buổi học (dùng khi Sửa) — kèm TeacherId thật (không chỉ tên gộp
+// chuỗi như ScheduleItem) và tiến độ số tiết đã xếp/tổng số tiết chuẩn của môn ở lớp này.
+export interface ScheduleDetail {
+  ScheduleId: number;
+  ClassId: number;
+  ClassName: string;
+  SubjectId: number;
+  SubjectName: string;
+  RoomId: number;
+  RoomName: string;
+  RoomType: RoomType;
+  ScheduleDate: string;
+  StartTime: string;
+  EndTime: string;
+  Note: string | null;
+  MergedSessionId: number | null;
+  GroupLabel: string | null;
+  teacherIds: number[];
+  totalPeriods: number | null;
+  scheduledPeriods: number;
+}
+
 export type ExamType = "TuLuan" | "TracNghiem" | "VanDap" | "ThucHanh";
 export type ExamStatus = "ChuaThi" | "DaThi" | "Huy";
 

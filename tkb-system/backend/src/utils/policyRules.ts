@@ -183,3 +183,86 @@ export async function checkDailyHoursLimit({
   }
   return { violated: false };
 }
+
+// Việc AU: độ dài 1 tiết theo loại Phòng — cùng quy ước với Việc AS (Lý thuyết dùng
+// TheoryPeriodMinutes, Thực hành/Labo/Lâm sàng dùng PracticePeriodMinutes, Sân bãi mặc định
+// theo giờ Lý thuyết).
+export async function getPeriodMinutes(roomType: string): Promise<number> {
+  if (roomType === "ThucHanh" || roomType === "Labo" || roomType === "LamSang") {
+    return getPolicyValue("PracticePeriodMinutes");
+  }
+  return getPolicyValue("TheoryPeriodMinutes");
+}
+
+interface PeriodProgressParams {
+  classId: number;
+  subjectId: number;
+  majorId: number;
+  cohortId: number | null;
+  termNumber: number | null;
+}
+interface PeriodProgressResult {
+  totalPeriods: number | null;
+  scheduledPeriods: number;
+}
+
+// Việc AU: khi sửa 1 buổi học đã xếp, hiện tiến độ "đã xếp X / tổng Y tiết" cho đúng cặp Lớp +
+// Môn đó — Y lấy từ Khung chương trình (ưu tiên dòng ghi đè riêng theo Khóa, giống
+// curriculumItemController.list), fallback về tổng giờ mặc định khai báo trên Subject nếu môn
+// chưa có trong khung chương trình. X cộng dồn TẤT CẢ buổi đã xếp cho Lớp+Môn này, quy đổi theo
+// độ dài tiết của TỪNG buổi (theo loại phòng buổi đó dùng) để không cộng nhầm phút thô.
+export async function getSubjectPeriodProgress({
+  classId, subjectId, majorId, cohortId, termNumber,
+}: PeriodProgressParams): Promise<PeriodProgressResult> {
+  const pool = await getPool();
+
+  let totalPeriods: number | null = null;
+  if (termNumber != null) {
+    const ciResult = await pool
+      .request()
+      .input("majorId", sql.Int, majorId)
+      .input("subjectId", sql.Int, subjectId)
+      .input("termNumber", sql.Int, termNumber)
+      .input("cohortId", sql.Int, cohortId)
+      .query<{ TotalHours: number | null }>(`
+        SELECT TOP 1 COALESCE(ci.TotalHours, sub.TheoryHours + sub.PracticeHours + sub.ExamHours) AS TotalHours
+        FROM CurriculumItems ci
+        INNER JOIN Subjects sub ON sub.SubjectId = ci.SubjectId
+        WHERE ci.MajorId = @majorId AND ci.SubjectId = @subjectId AND ci.TermNumber = @termNumber
+          AND (ci.CohortId = @cohortId OR ci.CohortId IS NULL)
+        ORDER BY CASE WHEN ci.CohortId = @cohortId THEN 0 ELSE 1 END
+      `);
+    totalPeriods = ciResult.recordset[0]?.TotalHours ?? null;
+  }
+  if (totalPeriods == null) {
+    const subResult = await pool
+      .request()
+      .input("subjectId", sql.Int, subjectId)
+      .query<{ Total: number }>(`SELECT TheoryHours + PracticeHours + ExamHours AS Total FROM Subjects WHERE SubjectId = @subjectId`);
+    totalPeriods = subResult.recordset[0]?.Total ?? null;
+  }
+
+  const rowsResult = await pool
+    .request()
+    .input("classId", sql.Int, classId)
+    .input("subjectId", sql.Int, subjectId)
+    .query<{ RoomType: string; StartTime: string; EndTime: string }>(`
+      SELECT r.RoomType, CONVERT(VARCHAR(5), s.StartTime, 108) AS StartTime, CONVERT(VARCHAR(5), s.EndTime, 108) AS EndTime
+      FROM Schedule s
+      INNER JOIN Rooms r ON r.RoomId = s.RoomId
+      WHERE s.ClassId = @classId AND s.SubjectId = @subjectId
+    `);
+
+  const periodMinutesCache = new Map<string, number>();
+  let scheduledPeriods = 0;
+  for (const row of rowsResult.recordset) {
+    let periodMinutes = periodMinutesCache.get(row.RoomType);
+    if (periodMinutes === undefined) {
+      periodMinutes = await getPeriodMinutes(row.RoomType);
+      periodMinutesCache.set(row.RoomType, periodMinutes);
+    }
+    scheduledPeriods += diffMinutes(row.StartTime, row.EndTime) / periodMinutes;
+  }
+
+  return { totalPeriods, scheduledPeriods: Math.round(scheduledPeriods * 10) / 10 };
+}

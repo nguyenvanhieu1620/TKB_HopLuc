@@ -5,6 +5,7 @@ import { authenticate, requireRole } from "../middleware/auth";
 const router = Router();
 
 router.get("/", authenticate, ctrl.list);
+router.get("/:id", authenticate, ctrl.getById);
 router.post("/merged", authenticate, requireRole("Admin"), ctrl.mergedCreate);
 router.post("/grouped", authenticate, requireRole("Admin"), ctrl.groupedCreate);
 router.post("/copy-week", authenticate, requireRole("Admin"), ctrl.copyWeek);
