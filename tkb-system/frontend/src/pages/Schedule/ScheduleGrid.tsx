@@ -3,7 +3,7 @@ import axiosClient from "../../api/axiosClient";
 import { useAuth } from "../../context/AuthContext";
 import { ScheduleItem, Semester, SchoolClass, Subject, Room, Teacher, Session, SchedulingPolicyItem, ApiErrorResponse, CopyWeekResult } from "../../types";
 import { AxiosError } from "axios";
-import { addDays, colorForId, findTodayWeekIndex, getWeeksInSemester, parseDateKey, startOfWeek, toDateKey, WEEKDAY_LABELS } from "../../../utils/calendar";
+import { addDays, addMinutesToTime, colorForId, findTodayWeekIndex, getWeeksInSemester, parseDateKey, startOfWeek, toDateKey, WEEKDAY_LABELS } from "../../../utils/calendar";
 import { buildWorkbook, downloadWorkbook } from "../../../utils/excel";
 import { subjectLabel } from "../../../utils/text";
 
@@ -15,13 +15,14 @@ interface ScheduleForm {
   teacherIds: string[];
   scheduleDate: string;
   sessionId: string;
+  periodCount: string;
   note: string;
   isMakeup: boolean;
 }
 
 const emptyForm: ScheduleForm = {
   semesterId: "", classId: "", subjectId: "", roomId: "",
-  teacherIds: [], scheduleDate: "", sessionId: "", note: "", isMakeup: false,
+  teacherIds: [], scheduleDate: "", sessionId: "", periodCount: "", note: "", isMakeup: false,
 };
 
 interface MergeForm {
@@ -32,13 +33,14 @@ interface MergeForm {
   teacherIds: string[];
   scheduleDate: string;
   sessionId: string;
+  periodCount: string;
   note: string;
   isMakeup: boolean;
 }
 
 const emptyMergeForm: MergeForm = {
   semesterId: "", classIds: [], subjectId: "", roomId: "",
-  teacherIds: [], scheduleDate: "", sessionId: "", note: "", isMakeup: false,
+  teacherIds: [], scheduleDate: "", sessionId: "", periodCount: "", note: "", isMakeup: false,
 };
 
 interface GroupRow {
@@ -53,6 +55,7 @@ interface GroupForm {
   subjectId: string;
   scheduleDate: string;
   sessionId: string;
+  periodCount: string;
   note: string;
   isMakeup: boolean;
   groups: GroupRow[];
@@ -60,7 +63,7 @@ interface GroupForm {
 
 const emptyGroupRow: GroupRow = { groupLabel: "", roomId: "", teacherIds: [] };
 const emptyGroupForm: GroupForm = {
-  semesterId: "", classId: "", subjectId: "", scheduleDate: "", sessionId: "", note: "", isMakeup: false,
+  semesterId: "", classId: "", subjectId: "", scheduleDate: "", sessionId: "", periodCount: "", note: "", isMakeup: false,
   groups: [{ ...emptyGroupRow, groupLabel: "Nhóm 1" }, { ...emptyGroupRow, groupLabel: "Nhóm 2" }],
 };
 
@@ -69,6 +72,37 @@ const CAPACITY_POLICY_BY_ROOM_TYPE: Record<string, string> = {
   ThucHanh: "MaxStudentsPerPracticeGroup",
   LamSang: "MaxStudentsPerClinicalGroup",
 };
+
+// Việc AS: độ dài 1 tiết phụ thuộc loại Phòng — Lý thuyết dùng TheoryPeriodMinutes, Thực
+// hành/Labo/Lâm sàng dùng PracticePeriodMinutes, Sân bãi mặc định theo giờ Lý thuyết.
+function periodMinutesForRoomType(roomType: string, policies: Record<string, number>): number {
+  if (roomType === "ThucHanh" || roomType === "Labo" || roomType === "LamSang") {
+    return policies.PracticePeriodMinutes ?? 60;
+  }
+  return policies.TheoryPeriodMinutes ?? 45;
+}
+
+interface ComputedEndTimeResult {
+  endTime: string | null;
+  overflowMessage: string | null;
+}
+
+// StartTime luôn neo theo Ca đã chọn; EndTime = StartTime + Số tiết * độ dài 1 tiết (theo loại
+// Phòng) — không được vượt quá EndTime gốc của Ca.
+function computeEndTime(session: Session | null, room: Room | null, periodCount: string, policies: Record<string, number>): ComputedEndTimeResult {
+  if (!session || !room) return { endTime: null, overflowMessage: null };
+  const periods = Number(periodCount);
+  if (!periods || periods <= 0) return { endTime: null, overflowMessage: null };
+  const periodMinutes = periodMinutesForRoomType(room.RoomType, policies);
+  const endTime = addMinutesToTime(session.StartTime, periods * periodMinutes);
+  if (endTime > session.EndTime) {
+    return {
+      endTime,
+      overflowMessage: `Ca ${session.SessionName} kết thúc lúc ${session.EndTime}, số tiết bạn nhập làm giờ học kết thúc lúc ${endTime} — vượt quá Ca, hãy giảm số tiết hoặc đổi Ca`,
+    };
+  }
+  return { endTime, overflowMessage: null };
+}
 
 function fmtDDMM(d: Date): string {
   return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -195,6 +229,33 @@ export default function ScheduleGrid() {
     [subjects, selectedGroupClass]
   );
 
+  // Việc AS: tính EndTime theo Số tiết thực tế thay vì lấp đầy cả Ca — mỗi form tra Phòng/Ca
+  // đang chọn của chính nó (form tách nhóm dùng Phòng của Nhóm 1 làm đại diện, giống cách
+  // scheduleController tính sessionLengthCheck ở backend).
+  const formRoom = useMemo(() => rooms.find((r) => String(r.RoomId) === form.roomId) || null, [rooms, form.roomId]);
+  const formSession = useMemo(() => sessions.find((s) => s.SessionId === Number(form.sessionId)) || null, [sessions, form.sessionId]);
+  const formEndTimeResult = useMemo(
+    () => computeEndTime(formSession, formRoom, form.periodCount, policies),
+    [formSession, formRoom, form.periodCount, policies]
+  );
+
+  const mergeRoom = useMemo(() => rooms.find((r) => String(r.RoomId) === mergeForm.roomId) || null, [rooms, mergeForm.roomId]);
+  const mergeSession = useMemo(() => sessions.find((s) => s.SessionId === Number(mergeForm.sessionId)) || null, [sessions, mergeForm.sessionId]);
+  const mergeEndTimeResult = useMemo(
+    () => computeEndTime(mergeSession, mergeRoom, mergeForm.periodCount, policies),
+    [mergeSession, mergeRoom, mergeForm.periodCount, policies]
+  );
+
+  const groupRepresentativeRoom = useMemo(
+    () => rooms.find((r) => String(r.RoomId) === groupForm.groups[0]?.roomId) || null,
+    [rooms, groupForm.groups]
+  );
+  const groupSession = useMemo(() => sessions.find((s) => s.SessionId === Number(groupForm.sessionId)) || null, [sessions, groupForm.sessionId]);
+  const groupEndTimeResult = useMemo(
+    () => computeEndTime(groupSession, groupRepresentativeRoom, groupForm.periodCount, policies),
+    [groupSession, groupRepresentativeRoom, groupForm.periodCount, policies]
+  );
+
   // Gợi ý tách nhóm: sĩ số lớp vượt giới hạn/ca của loại phòng đang chọn ở form xếp lịch thường.
   const capacityHint = useMemo(() => {
     if (!selectedFormClass || !form.roomId) return null;
@@ -307,6 +368,18 @@ export default function ScheduleGrid() {
       setError("Vui lòng chọn ca học");
       return;
     }
+    if (!formRoom) {
+      setError("Vui lòng chọn phòng học");
+      return;
+    }
+    if (!form.periodCount || Number(form.periodCount) <= 0) {
+      setError("Vui lòng nhập số tiết");
+      return;
+    }
+    if (!formEndTimeResult.endTime || formEndTimeResult.overflowMessage) {
+      setError(formEndTimeResult.overflowMessage || "Không tính được giờ kết thúc");
+      return;
+    }
 
     const payload = {
       semesterId: Number(form.semesterId),
@@ -316,7 +389,7 @@ export default function ScheduleGrid() {
       teacherIds: form.teacherIds.map(Number),
       scheduleDate: form.scheduleDate,
       startTime: session.StartTime,
-      endTime: session.EndTime,
+      endTime: formEndTimeResult.endTime,
       note: form.note,
       isMakeup: form.isMakeup,
     };
@@ -349,6 +422,18 @@ export default function ScheduleGrid() {
       setMergeError("Cần chọn ít nhất 2 lớp để ghép");
       return;
     }
+    if (!mergeRoom) {
+      setMergeError("Vui lòng chọn phòng học");
+      return;
+    }
+    if (!mergeForm.periodCount || Number(mergeForm.periodCount) <= 0) {
+      setMergeError("Vui lòng nhập số tiết");
+      return;
+    }
+    if (!mergeEndTimeResult.endTime || mergeEndTimeResult.overflowMessage) {
+      setMergeError(mergeEndTimeResult.overflowMessage || "Không tính được giờ kết thúc");
+      return;
+    }
 
     const payload = {
       semesterId: Number(mergeForm.semesterId),
@@ -358,7 +443,7 @@ export default function ScheduleGrid() {
       teacherIds: mergeForm.teacherIds.map(Number),
       scheduleDate: mergeForm.scheduleDate,
       startTime: session.StartTime,
-      endTime: session.EndTime,
+      endTime: mergeEndTimeResult.endTime,
       note: mergeForm.note,
       isMakeup: mergeForm.isMakeup,
     };
@@ -410,6 +495,14 @@ export default function ScheduleGrid() {
       setGroupError("Mỗi nhóm cần có tên nhóm và phòng học");
       return;
     }
+    if (!groupForm.periodCount || Number(groupForm.periodCount) <= 0) {
+      setGroupError("Vui lòng nhập số tiết");
+      return;
+    }
+    if (!groupEndTimeResult.endTime || groupEndTimeResult.overflowMessage) {
+      setGroupError(groupEndTimeResult.overflowMessage || "Không tính được giờ kết thúc (kiểm tra Phòng của Nhóm 1)");
+      return;
+    }
 
     const payload = {
       semesterId: Number(groupForm.semesterId),
@@ -417,7 +510,7 @@ export default function ScheduleGrid() {
       subjectId: Number(groupForm.subjectId),
       scheduleDate: groupForm.scheduleDate,
       startTime: session.StartTime,
-      endTime: session.EndTime,
+      endTime: groupEndTimeResult.endTime,
       note: groupForm.note,
       isMakeup: groupForm.isMakeup,
       groups: groupForm.groups.map((g) => ({
@@ -624,12 +717,25 @@ export default function ScheduleGrid() {
             </div>
             <input type="date" value={form.scheduleDate}
               onChange={(e) => setForm({ ...form, scheduleDate: e.target.value })} required />
-            <select value={form.sessionId} onChange={(e) => setForm({ ...form, sessionId: e.target.value })} required>
-              <option value="">Ca học</option>
-              {sessions.map((s) => (
-                <option key={s.SessionId} value={s.SessionId}>{s.SessionName} ({s.StartTime}–{s.EndTime})</option>
-              ))}
-            </select>
+            <div>
+              <select value={form.sessionId} onChange={(e) => setForm({ ...form, sessionId: e.target.value })} required>
+                <option value="">Ca học</option>
+                {sessions.map((s) => (
+                  <option key={s.SessionId} value={s.SessionId}>{s.SessionName} ({s.StartTime}–{s.EndTime})</option>
+                ))}
+              </select>
+              <input type="number" min={1} placeholder="Số tiết" value={form.periodCount} className="mt-1 w-full"
+                onChange={(e) => setForm({ ...form, periodCount: e.target.value })} required />
+              {formSession && (
+                formEndTimeResult.endTime
+                  ? (
+                    <div className={formEndTimeResult.overflowMessage ? "error-text mt-1" : "hint mt-1"}>
+                      {formEndTimeResult.overflowMessage || `Giờ học: ${formSession.StartTime} - ${formEndTimeResult.endTime}`}
+                    </div>
+                  )
+                  : <div className="hint mt-1">Chọn phòng và nhập số tiết để tính giờ học</div>
+              )}
+            </div>
             <input placeholder="Ghi chú" value={form.note}
               onChange={(e) => setForm({ ...form, note: e.target.value })} />
           </div>
@@ -691,12 +797,25 @@ export default function ScheduleGrid() {
             </div>
             <input type="date" value={mergeForm.scheduleDate}
               onChange={(e) => setMergeForm({ ...mergeForm, scheduleDate: e.target.value })} required />
-            <select value={mergeForm.sessionId} onChange={(e) => setMergeForm({ ...mergeForm, sessionId: e.target.value })} required>
-              <option value="">Ca học</option>
-              {sessions.map((s) => (
-                <option key={s.SessionId} value={s.SessionId}>{s.SessionName} ({s.StartTime}–{s.EndTime})</option>
-              ))}
-            </select>
+            <div>
+              <select value={mergeForm.sessionId} onChange={(e) => setMergeForm({ ...mergeForm, sessionId: e.target.value })} required>
+                <option value="">Ca học</option>
+                {sessions.map((s) => (
+                  <option key={s.SessionId} value={s.SessionId}>{s.SessionName} ({s.StartTime}–{s.EndTime})</option>
+                ))}
+              </select>
+              <input type="number" min={1} placeholder="Số tiết" value={mergeForm.periodCount} className="mt-1 w-full"
+                onChange={(e) => setMergeForm({ ...mergeForm, periodCount: e.target.value })} required />
+              {mergeSession && (
+                mergeEndTimeResult.endTime
+                  ? (
+                    <div className={mergeEndTimeResult.overflowMessage ? "error-text mt-1" : "hint mt-1"}>
+                      {mergeEndTimeResult.overflowMessage || `Giờ học: ${mergeSession.StartTime} - ${mergeEndTimeResult.endTime}`}
+                    </div>
+                  )
+                  : <div className="hint mt-1">Chọn phòng và nhập số tiết để tính giờ học</div>
+              )}
+            </div>
             <input placeholder="Ghi chú" value={mergeForm.note}
               onChange={(e) => setMergeForm({ ...mergeForm, note: e.target.value })} />
           </div>
@@ -734,12 +853,25 @@ export default function ScheduleGrid() {
             </select>
             <input type="date" value={groupForm.scheduleDate}
               onChange={(e) => setGroupForm({ ...groupForm, scheduleDate: e.target.value })} required />
-            <select value={groupForm.sessionId} onChange={(e) => setGroupForm({ ...groupForm, sessionId: e.target.value })} required>
-              <option value="">Ca học</option>
-              {sessions.map((s) => (
-                <option key={s.SessionId} value={s.SessionId}>{s.SessionName} ({s.StartTime}–{s.EndTime})</option>
-              ))}
-            </select>
+            <div>
+              <select value={groupForm.sessionId} onChange={(e) => setGroupForm({ ...groupForm, sessionId: e.target.value })} required>
+                <option value="">Ca học</option>
+                {sessions.map((s) => (
+                  <option key={s.SessionId} value={s.SessionId}>{s.SessionName} ({s.StartTime}–{s.EndTime})</option>
+                ))}
+              </select>
+              <input type="number" min={1} placeholder="Số tiết" value={groupForm.periodCount} className="mt-1 w-full"
+                onChange={(e) => setGroupForm({ ...groupForm, periodCount: e.target.value })} required />
+              {groupSession && (
+                groupEndTimeResult.endTime
+                  ? (
+                    <div className={groupEndTimeResult.overflowMessage ? "error-text mt-1" : "hint mt-1"}>
+                      {groupEndTimeResult.overflowMessage || `Giờ học: ${groupSession.StartTime} - ${groupEndTimeResult.endTime}`}
+                    </div>
+                  )
+                  : <div className="hint mt-1">Chọn Phòng cho Nhóm 1 bên dưới và nhập số tiết để tính giờ học (độ dài tiết tính theo loại phòng của Nhóm 1)</div>
+              )}
+            </div>
             <input placeholder="Ghi chú" value={groupForm.note}
               onChange={(e) => setGroupForm({ ...groupForm, note: e.target.value })} />
           </div>

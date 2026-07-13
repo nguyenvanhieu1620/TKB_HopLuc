@@ -30,6 +30,15 @@ export function addDays(d: Date, n: number): Date {
 
 export const WEEKDAY_LABELS = ["Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật"];
 
+// Cộng thêm N phút vào 1 mốc giờ "HH:MM", trả về "HH:MM" (zero-pad, so sánh được bằng string).
+export function addMinutesToTime(time: string, minutes: number): string {
+  const [h, m] = time.split(":").map(Number);
+  const total = h * 60 + m + minutes;
+  const hh = Math.floor(total / 60) % 24;
+  const mm = total % 60;
+  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+}
+
 export interface SemesterWeek {
   weekNumber: number;
   start: Date;
