@@ -49,6 +49,9 @@ interface GroupRow {
   groupLabel: string;
   roomId: string;
   teacherIds: string[];
+  scheduleDate: string;
+  sessionId: string;
+  periodCount: string;
 }
 
 interface GroupForm {
@@ -64,7 +67,7 @@ interface GroupForm {
   groups: GroupRow[];
 }
 
-const emptyGroupRow: GroupRow = { groupLabel: "", roomId: "", teacherIds: [] };
+const emptyGroupRow: GroupRow = { groupLabel: "", roomId: "", teacherIds: [], scheduleDate: "", sessionId: "", periodCount: "" };
 const emptyGroupForm: GroupForm = {
   semesterId: "", classId: "", subjectId: "", sessionType: "", scheduleDate: "", sessionId: "", periodCount: "", note: "", isMakeup: false,
   groups: [{ ...emptyGroupRow, groupLabel: "Nhóm 1" }, { ...emptyGroupRow, groupLabel: "Nhóm 2" }],
@@ -364,14 +367,15 @@ export default function ScheduleGrid() {
     [mergeSession, mergeRoom, mergeForm.periodCount, policies]
   );
 
-  const groupRepresentativeRoom = useMemo(
-    () => rooms.find((r) => String(r.RoomId) === groupForm.groups[0]?.roomId) || null,
-    [rooms, groupForm.groups]
-  );
-  const groupSession = useMemo(() => sessions.find((s) => s.SessionId === Number(groupForm.sessionId)) || null, [sessions, groupForm.sessionId]);
-  const groupEndTimeResult = useMemo(
-    () => computeEndTime(groupSession, groupRepresentativeRoom, groupForm.periodCount, policies),
-    [groupSession, groupRepresentativeRoom, groupForm.periodCount, policies]
+  // Việc AY: mỗi nhóm tự chọn Ngày/Ca/Số tiết riêng (để xoay vòng dùng chung 1 phòng khác giờ nhau)
+  // — tính EndTime ĐỘC LẬP cho từng nhóm, không còn dùng chung 1 kết quả đại diện như trước.
+  const groupRowsComputed = useMemo(
+    () => groupForm.groups.map((g) => {
+      const room = rooms.find((r) => String(r.RoomId) === g.roomId) || null;
+      const session = sessions.find((s) => s.SessionId === Number(g.sessionId)) || null;
+      return { room, session, endTimeResult: computeEndTime(session, room, g.periodCount, policies) };
+    }),
+    [groupForm.groups, rooms, sessions, policies]
   );
 
   // Việc AW: dropdown Phòng chỉ hiện phòng thuộc đúng nhóm RoomType của Loại buổi học đã chọn.
@@ -730,10 +734,19 @@ export default function ScheduleGrid() {
     }
   }
 
+  // Việc AY: nhóm mới copy Ngày/Ca/Số tiết từ nhóm liền trước (hoặc từ form chung nếu chưa có
+  // nhóm nào) làm giá trị khởi tạo — tiện khi nhiều nhóm dùng chung giờ, nhưng vẫn sửa riêng được.
   function addGroupRow() {
+    const last = groupForm.groups[groupForm.groups.length - 1];
     setGroupForm({
       ...groupForm,
-      groups: [...groupForm.groups, { ...emptyGroupRow, groupLabel: `Nhóm ${groupForm.groups.length + 1}` }],
+      groups: [...groupForm.groups, {
+        ...emptyGroupRow,
+        groupLabel: `Nhóm ${groupForm.groups.length + 1}`,
+        scheduleDate: last?.scheduleDate || groupForm.scheduleDate,
+        sessionId: last?.sessionId || groupForm.sessionId,
+        periodCount: last?.periodCount || groupForm.periodCount,
+      }],
     });
   }
 
@@ -753,38 +766,46 @@ export default function ScheduleGrid() {
     e.preventDefault();
     setGroupError("");
 
-    const session = sessions.find((s) => s.SessionId === Number(groupForm.sessionId));
-    if (!session) {
-      setGroupError("Vui lòng chọn ca học");
+    if (groupForm.groups.some((g) => !g.groupLabel.trim() || !g.roomId || !g.scheduleDate || !g.sessionId || !g.periodCount)) {
+      setGroupError("Mỗi nhóm cần có đủ Tên nhóm, Ngày, Ca, Số tiết và Phòng học");
       return;
     }
-    if (groupForm.groups.some((g) => !g.groupLabel.trim() || !g.roomId)) {
-      setGroupError("Mỗi nhóm cần có tên nhóm và phòng học");
-      return;
-    }
-    if (!groupForm.periodCount || Number(groupForm.periodCount) <= 0) {
-      setGroupError("Vui lòng nhập số tiết");
-      return;
-    }
-    if (!groupEndTimeResult.endTime || groupEndTimeResult.overflowMessage) {
-      setGroupError(groupEndTimeResult.overflowMessage || "Không tính được giờ kết thúc (kiểm tra Phòng của Nhóm 1)");
-      return;
+
+    // Việc AY: mỗi nhóm tự tính StartTime/EndTime riêng theo đúng Ngày/Ca/Số tiết của chính nó.
+    const groupsPayload: { groupLabel: string; roomId: number; teacherIds: number[]; scheduleDate: string; startTime: string; endTime: string }[] = [];
+    for (const g of groupForm.groups) {
+      const session = sessions.find((s) => s.SessionId === Number(g.sessionId));
+      if (!session) {
+        setGroupError(`Nhóm "${g.groupLabel}": vui lòng chọn ca học`);
+        return;
+      }
+      const room = rooms.find((r) => String(r.RoomId) === g.roomId);
+      if (!room) {
+        setGroupError(`Nhóm "${g.groupLabel}": vui lòng chọn phòng học`);
+        return;
+      }
+      const endTimeResult = computeEndTime(session, room, g.periodCount, policies);
+      if (!endTimeResult.endTime || endTimeResult.overflowMessage) {
+        setGroupError(`Nhóm "${g.groupLabel}": ${endTimeResult.overflowMessage || "Không tính được giờ kết thúc"}`);
+        return;
+      }
+      groupsPayload.push({
+        groupLabel: g.groupLabel.trim(),
+        roomId: Number(g.roomId),
+        teacherIds: g.teacherIds.map(Number),
+        scheduleDate: g.scheduleDate,
+        startTime: session.StartTime,
+        endTime: endTimeResult.endTime,
+      });
     }
 
     const payload = {
       semesterId: Number(groupForm.semesterId),
       classId: Number(groupForm.classId),
       subjectId: Number(groupForm.subjectId),
-      scheduleDate: groupForm.scheduleDate,
-      startTime: session.StartTime,
-      endTime: groupEndTimeResult.endTime,
       note: groupForm.note,
       isMakeup: groupForm.isMakeup,
-      groups: groupForm.groups.map((g) => ({
-        groupLabel: g.groupLabel.trim(),
-        roomId: Number(g.roomId),
-        teacherIds: g.teacherIds.map(Number),
-      })),
+      groups: groupsPayload,
     };
     try {
       const res = await axiosClient.post<{ warning?: string }>("/schedule/grouped", payload);
@@ -1169,27 +1190,6 @@ export default function ScheduleGrid() {
               <option value="">{groupCurriculumSubjectIds ? "Môn học" : "-- Chọn Lớp và Kỳ trước --"}</option>
               {groupSubjects.map((s) => <option key={s.SubjectId} value={s.SubjectId}>{subjectLabel(s)}</option>)}
             </select>
-            <input type="date" value={groupForm.scheduleDate}
-              onChange={(e) => setGroupForm({ ...groupForm, scheduleDate: e.target.value })} required />
-            <div>
-              <select value={groupForm.sessionId} onChange={(e) => setGroupForm({ ...groupForm, sessionId: e.target.value })} required>
-                <option value="">Ca học</option>
-                {sessions.map((s) => (
-                  <option key={s.SessionId} value={s.SessionId}>{s.SessionName} ({s.StartTime}–{s.EndTime})</option>
-                ))}
-              </select>
-              <input type="number" min={1} placeholder="Số tiết" value={groupForm.periodCount} className="mt-1 w-full"
-                onChange={(e) => setGroupForm({ ...groupForm, periodCount: e.target.value })} required />
-              {groupSession && (
-                groupEndTimeResult.endTime
-                  ? (
-                    <div className={groupEndTimeResult.overflowMessage ? "error-text mt-1" : "hint mt-1"}>
-                      {groupEndTimeResult.overflowMessage || `Giờ học: ${groupSession.StartTime} - ${groupEndTimeResult.endTime}`}
-                    </div>
-                  )
-                  : <div className="hint mt-1">Chọn Phòng cho Nhóm 1 bên dưới và nhập số tiết để tính giờ học (độ dài tiết tính theo loại phòng của Nhóm 1)</div>
-              )}
-            </div>
             <select value={groupForm.sessionType} onChange={(e) => setGroupForm({
               ...groupForm, sessionType: e.target.value,
               groups: groupForm.groups.map((g) => ({ ...g, roomId: "" })),
@@ -1197,31 +1197,73 @@ export default function ScheduleGrid() {
               <option value="">Loại buổi học</option>
               {SESSION_TYPE_OPTIONS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
             </select>
+            <div>
+              <input type="date" value={groupForm.scheduleDate}
+                onChange={(e) => setGroupForm({ ...groupForm, scheduleDate: e.target.value })} />
+              <div className="hint mt-1">Ngày mặc định — mỗi nhóm có thể tự chọn ngày khác bên dưới</div>
+            </div>
+            <div>
+              <select value={groupForm.sessionId} onChange={(e) => setGroupForm({ ...groupForm, sessionId: e.target.value })}>
+                <option value="">Ca học mặc định</option>
+                {sessions.map((s) => (
+                  <option key={s.SessionId} value={s.SessionId}>{s.SessionName} ({s.StartTime}–{s.EndTime})</option>
+                ))}
+              </select>
+              <input type="number" min={1} placeholder="Số tiết mặc định" value={groupForm.periodCount} className="mt-1 w-full"
+                onChange={(e) => setGroupForm({ ...groupForm, periodCount: e.target.value })} />
+              <div className="hint mt-1">Ca/Số tiết mặc định khi bấm "+ Thêm nhóm" — mỗi nhóm tự chọn riêng được bên dưới (xoay vòng khác giờ nếu chỉ có 1 phòng)</div>
+            </div>
             <input placeholder="Ghi chú" value={groupForm.note}
               onChange={(e) => setGroupForm({ ...groupForm, note: e.target.value })} />
           </div>
 
           <div className="mt-3">
-            {groupForm.groups.map((g, idx) => (
-              <div key={idx} className="inline-form mb-2">
-                <input placeholder="Tên nhóm (vd Nhóm 1)" value={g.groupLabel}
-                  onChange={(e) => updateGroupRow(idx, { groupLabel: e.target.value })} required />
-                <select value={g.roomId} onChange={(e) => updateGroupRow(idx, { roomId: e.target.value })}
-                  required disabled={!groupForm.sessionType}>
-                  <option value="">{groupForm.sessionType ? "Phòng" : "-- Chọn Loại buổi học trước --"}</option>
-                  {groupRoomsForType.map((r) => <option key={r.RoomId} value={r.RoomId}>{r.RoomName}</option>)}
-                </select>
-                <select multiple value={g.teacherIds}
-                  onChange={(e) => updateGroupRow(idx, { teacherIds: [...e.target.selectedOptions].map((o) => o.value) })}>
-                  {teachers.map((t) => <option key={t.TeacherId} value={t.TeacherId}>{t.FullName}</option>)}
-                </select>
-                {groupForm.groups.length > 2 && (
-                  <button type="button" onClick={() => removeGroupRow(idx)}>Xóa nhóm</button>
-                )}
-              </div>
-            ))}
+            {groupForm.groups.map((g, idx) => {
+              const computed = groupRowsComputed[idx];
+              return (
+                <div key={idx} className="inline-form mb-2 items-start">
+                  <input placeholder="Tên nhóm (vd Nhóm 1)" value={g.groupLabel}
+                    onChange={(e) => updateGroupRow(idx, { groupLabel: e.target.value })} required />
+                  <input type="date" value={g.scheduleDate}
+                    onChange={(e) => updateGroupRow(idx, { scheduleDate: e.target.value })} required />
+                  <div>
+                    <select value={g.sessionId} onChange={(e) => updateGroupRow(idx, { sessionId: e.target.value })} required>
+                      <option value="">Ca học</option>
+                      {sessions.map((s) => (
+                        <option key={s.SessionId} value={s.SessionId}>{s.SessionName} ({s.StartTime}–{s.EndTime})</option>
+                      ))}
+                    </select>
+                    <input type="number" min={1} placeholder="Số tiết" value={g.periodCount} className="mt-1 w-full"
+                      onChange={(e) => updateGroupRow(idx, { periodCount: e.target.value })} required />
+                  </div>
+                  <select value={g.roomId} onChange={(e) => updateGroupRow(idx, { roomId: e.target.value })}
+                    required disabled={!groupForm.sessionType}>
+                    <option value="">{groupForm.sessionType ? "Phòng" : "-- Chọn Loại buổi học trước --"}</option>
+                    {groupRoomsForType.map((r) => <option key={r.RoomId} value={r.RoomId}>{r.RoomName}</option>)}
+                  </select>
+                  <select multiple value={g.teacherIds}
+                    onChange={(e) => updateGroupRow(idx, { teacherIds: [...e.target.selectedOptions].map((o) => o.value) })}>
+                    {teachers.map((t) => <option key={t.TeacherId} value={t.TeacherId}>{t.FullName}</option>)}
+                  </select>
+                  {groupForm.groups.length > 2 && (
+                    <button type="button" onClick={() => removeGroupRow(idx)}>Xóa nhóm</button>
+                  )}
+                  <div className="basis-full">
+                    {computed?.session && (
+                      computed.endTimeResult.endTime
+                        ? (
+                          <div className={computed.endTimeResult.overflowMessage ? "error-text mt-0" : "hint mt-0"}>
+                            {computed.endTimeResult.overflowMessage || `Giờ học: ${computed.session.StartTime} - ${computed.endTimeResult.endTime}`}
+                          </div>
+                        )
+                        : <div className="hint mt-0">Chọn Phòng và nhập số tiết để tính giờ học cho nhóm này</div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
             <button type="button" onClick={addGroupRow}>+ Thêm nhóm</button>
-            <div className="hint mt-1">Giữ Ctrl (Windows) / Cmd (Mac) để chọn nhiều giảng viên trong 1 nhóm</div>
+            <div className="hint mt-1">Mỗi nhóm tự chọn Ngày/Ca riêng — xoay vòng dùng chung 1 phòng ở các buổi khác nhau nếu trường không đủ phòng. Giữ Ctrl (Windows) / Cmd (Mac) để chọn nhiều giảng viên trong 1 nhóm.</div>
           </div>
 
           <label className="flex items-center gap-2 mt-2">
