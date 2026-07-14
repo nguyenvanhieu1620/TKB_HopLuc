@@ -274,3 +274,19 @@ export async function findHoliday(date: string, trainingMode?: "CQ" | "LT" | nul
     `);
   return result.recordset[0] || null;
 }
+
+// Việc BG: Cảnh báo (không chặn) khi xếp tiết học thường (không áp dụng cho Exams) vào ngày đã sang
+// giai đoạn dành riêng cho thi cuối kỳ (TeachingEndDate của Kỳ đang chọn) — Kỳ thêm thủ công thường
+// chưa có TeachingEndDate (NULL) nên không cảnh báo gì.
+export async function checkExamPeriodWarning(semesterId: number, scheduleDate: string): Promise<string | null> {
+  const pool = await getPool();
+  const result = await pool
+    .request()
+    .input("semesterId", sql.Int, semesterId)
+    .query<{ TeachingEndDate: string | null }>(`
+      SELECT CONVERT(VARCHAR(10), TeachingEndDate, 23) AS TeachingEndDate FROM Semesters WHERE SemesterId = @semesterId
+    `);
+  const teachingEndDate = result.recordset[0]?.TeachingEndDate;
+  if (!teachingEndDate || scheduleDate <= teachingEndDate) return null;
+  return "Ngày này đã sang giai đoạn dành cho thi cuối kỳ, cân nhắc lại nếu đây không phải buổi ôn thi.";
+}

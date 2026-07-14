@@ -454,3 +454,97 @@ export async function checkTeacherWeeklyHours({
   }
   return { violated: false, currentHours: Math.round(currentHours * 10) / 10, maxHours };
 }
+
+interface TeacherYearlyHoursCheckParams {
+  teacherId: number;
+  scheduleDate: string;
+  roomId: number;
+  startTime: string;
+  endTime: string;
+  excludeScheduleId?: number | null;
+  excludeMergedSessionId?: number | null;
+}
+interface TeacherYearlyHoursCheckResult {
+  violated: boolean;
+  currentHours: number;
+  maxHours: number;
+  message?: string;
+}
+
+// Việc BF: CÙNG PATTERN hệt checkTeacherWeeklyHours ở trên (dedup MergedSessionId, KHÔNG dedup
+// GroupBatchId, "giờ dạy chuẩn" quy đổi tiết theo TheoryPeriodMinutes/PracticePeriodMinutes) — chỉ
+// khác PHẠM VI tính: NĂM DƯƠNG LỊCH chứa scheduleDate thay vì tuần, và định mức lấy theo CHỨC VỤ của
+// GV (Trưởng/Phó khoa dùng MaxTeachingHoursPerYearManager, còn lại MaxTeachingHoursPerYearStandard —
+// cùng cách xác định isManager đã dùng ở reportController.teachingHours). Mục đích: đảm bảo tổng cả
+// năm không vượt định mức dù từng tuần vẫn còn dư (checkTeacherWeeklyHours không bắt được trường hợp
+// này vì chỉ xét riêng từng tuần).
+export async function checkTeacherYearlyHours({
+  teacherId, scheduleDate, roomId, startTime, endTime,
+  excludeScheduleId = null, excludeMergedSessionId = null,
+}: TeacherYearlyHoursCheckParams): Promise<TeacherYearlyHoursCheckResult> {
+  const pool = await getPool();
+  const teacherResult = await pool
+    .request()
+    .input("teacherId", sql.Int, teacherId)
+    .query<{ FullName: string; PositionName: string | null }>(`
+      SELECT t.FullName, p.PositionName
+      FROM Teachers t
+      LEFT JOIN Positions p ON p.PositionId = t.PositionId
+      WHERE t.TeacherId = @teacherId
+    `);
+  const teacherRow = teacherResult.recordset[0];
+  const teacherName = teacherRow?.FullName ?? `GV #${teacherId}`;
+  const isManager = teacherRow?.PositionName != null
+    && (teacherRow.PositionName.includes("Trưởng khoa") || teacherRow.PositionName.includes("Phó"));
+  const maxHours = await getPolicyValue(isManager ? "MaxTeachingHoursPerYearManager" : "MaxTeachingHoursPerYearStandard");
+
+  const room = await getRoomInfo(roomId);
+  if (!room) return { violated: false, currentHours: 0, maxHours };
+
+  const year = Number(scheduleDate.slice(0, 4));
+  const yearStart = `${year}-01-01`;
+  const yearEnd = `${year}-12-31`;
+
+  const existingResult = await pool
+    .request()
+    .input("teacherId", sql.Int, teacherId)
+    .input("yearStart", sql.Date, yearStart)
+    .input("yearEnd", sql.Date, yearEnd)
+    .input("excludeId", sql.Int, excludeScheduleId)
+    .input("excludeMergedId", sql.Int, excludeMergedSessionId)
+    .query<{ ScheduleId: number; MergedSessionId: number | null; RoomType: string; StartTime: string; EndTime: string }>(`
+      SELECT s.ScheduleId, s.MergedSessionId, r.RoomType,
+             CONVERT(VARCHAR(5), s.StartTime, 108) AS StartTime, CONVERT(VARCHAR(5), s.EndTime, 108) AS EndTime
+      FROM Schedule s
+      INNER JOIN ScheduleTeachers st ON st.ScheduleId = s.ScheduleId
+      INNER JOIN Rooms r ON r.RoomId = s.RoomId
+      WHERE st.TeacherId = @teacherId AND s.ScheduleDate BETWEEN @yearStart AND @yearEnd
+        AND (@excludeId IS NULL OR s.ScheduleId <> @excludeId)
+        AND (@excludeMergedId IS NULL OR s.MergedSessionId IS NULL OR s.MergedSessionId <> @excludeMergedId)
+    `);
+
+  const seenMergedSessions = new Set<number>();
+  let currentHours = 0;
+  for (const row of existingResult.recordset) {
+    if (row.MergedSessionId != null) {
+      if (seenMergedSessions.has(row.MergedSessionId)) continue;
+      seenMergedSessions.add(row.MergedSessionId);
+    }
+    const periodMinutes = await getPeriodMinutes(row.RoomType);
+    currentHours += diffMinutes(row.StartTime, row.EndTime) / periodMinutes;
+  }
+
+  const addedPeriodMinutes = await getPeriodMinutes(room.RoomType);
+  const addedHours = diffMinutes(startTime, endTime) / addedPeriodMinutes;
+  const totalHours = currentHours + addedHours;
+
+  if (totalHours > maxHours) {
+    return {
+      violated: true,
+      currentHours: Math.round(currentHours * 10) / 10,
+      maxHours,
+      message: `GV ${teacherName} đã dạy ${Math.round(currentHours * 10) / 10}/${maxHours} giờ trong năm ${year}, tiết này cần thêm ${Math.round(addedHours * 10) / 10} giờ — vượt định mức giờ dạy/năm`,
+    };
+  }
+  return { violated: false, currentHours: Math.round(currentHours * 10) / 10, maxHours };
+}

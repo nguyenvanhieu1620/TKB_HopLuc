@@ -186,6 +186,10 @@ CREATE TABLE Semesters (
     AcademicYear  NVARCHAR(20)    NOT NULL,   -- năm học, vd '2025-2026'
     StartDate     DATE            NOT NULL,
     EndDate       DATE            NOT NULL,
+    -- Việc BG: hạn cuối xếp tiết học thường — sau ngày này (nếu khác NULL) dành riêng cho thi cuối
+    -- kỳ. Kỳ tự sinh (generate-terms) tự tính = EndDate trừ ExamPeriodWeeks tuần; Kỳ thêm thủ công
+    -- mặc định NULL (không bắt buộc).
+    TeachingEndDate DATE          NULL,
     ClassId       INT             NULL,
     TermNumber    INT             NULL,       -- Kỳ thứ mấy của lớp (1, 2, 3...)
     IsActive      BIT             NOT NULL DEFAULT 1,
@@ -324,7 +328,8 @@ INSERT INTO SchedulingPolicy (PolicyKey, PolicyValue, Description) VALUES
 (N'NotifyLeadDays',            N'5',  N'Số ngày báo trước khi ban hành TKB tuần mới'),
 (N'MaxTeachingHoursPerYearManager', N'300', N'Định mức giờ dạy/năm cho GV kiêm quản lý (Trưởng/Phó khoa)'),
 (N'MaxTeachingHoursPerYearStandard',N'450', N'Định mức giờ dạy/năm cho GV thường'),
-(N'MaxTeachingHoursPerWeek',        N'25',  N'Định mức giờ dạy chuẩn tối đa/tuần cho 1 GV (chặn cứng, tránh dồn quá tải 1 tuần cụ thể)');
+(N'MaxTeachingHoursPerWeek',        N'25',  N'Định mức giờ dạy chuẩn tối đa/tuần cho 1 GV (chặn cứng, tránh dồn quá tải 1 tuần cụ thể)'),
+(N'ExamPeriodWeeks',                N'1',   N'Số tuần cuối mỗi Kỳ dành riêng cho thi, không xếp tiết học thường');
 GO
 
 /* ============================================================

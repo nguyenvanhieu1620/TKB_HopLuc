@@ -8,10 +8,13 @@ interface SemesterForm {
   academicYear: string;
   startDate: string;
   endDate: string;
+  teachingEndDate: string;
   termNumber: string;
 }
 
-const emptyForm: SemesterForm = { semesterName: "", academicYear: "", startDate: "", endDate: "", termNumber: "" };
+const emptyForm: SemesterForm = {
+  semesterName: "", academicYear: "", startDate: "", endDate: "", teachingEndDate: "", termNumber: "",
+};
 
 export default function Semesters() {
   const [classes, setClasses] = useState<SchoolClass[]>([]);
@@ -60,6 +63,7 @@ export default function Semesters() {
       academicYear: form.academicYear,
       startDate: form.startDate,
       endDate: form.endDate,
+      teachingEndDate: form.teachingEndDate || null,
       classId: Number(classId),
       termNumber: form.termNumber ? Number(form.termNumber) : undefined,
     };
@@ -84,6 +88,7 @@ export default function Semesters() {
       academicYear: item.AcademicYear,
       startDate: item.StartDate?.slice(0, 10),
       endDate: item.EndDate?.slice(0, 10),
+      teachingEndDate: item.TeachingEndDate ? item.TeachingEndDate.slice(0, 10) : "",
       termNumber: item.TermNumber != null ? String(item.TermNumber) : "",
     });
   }
@@ -161,6 +166,11 @@ export default function Semesters() {
             onChange={(e) => setForm({ ...form, startDate: e.target.value })} required />
           <input type="date" value={form.endDate}
             onChange={(e) => setForm({ ...form, endDate: e.target.value })} required />
+          <div>
+            <input type="date" value={form.teachingEndDate}
+              onChange={(e) => setForm({ ...form, teachingEndDate: e.target.value })} />
+            <div className="hint mt-1">Hạn xếp tiết học (để trống = không giới hạn)</div>
+          </div>
           <input type="number" placeholder="Kỳ thứ mấy" min={1} value={form.termNumber}
             onChange={(e) => setForm({ ...form, termNumber: e.target.value })} />
           <button type="submit">{editingId ? "Cập nhật" : "Thêm mới"}</button>
@@ -177,7 +187,7 @@ export default function Semesters() {
 
       {classId && items.length > 0 && (
         <table className="data-table">
-          <thead><tr><th>Kỳ</th><th>Tên đợt học</th><th>Năm học</th><th>Bắt đầu</th><th>Kết thúc</th><th></th></tr></thead>
+          <thead><tr><th>Kỳ</th><th>Tên đợt học</th><th>Năm học</th><th>Bắt đầu</th><th>Kết thúc</th><th>Hạn xếp tiết học</th><th></th></tr></thead>
           <tbody>
             {items.map((it) => (
               <tr key={it.SemesterId}>
@@ -186,6 +196,7 @@ export default function Semesters() {
                 <td>{it.AcademicYear}</td>
                 <td>{it.StartDate?.slice(0, 10)}</td>
                 <td>{it.EndDate?.slice(0, 10)}</td>
+                <td>{it.TeachingEndDate ? it.TeachingEndDate.slice(0, 10) : "—"}</td>
                 <td>
                   <button onClick={() => handleEdit(it)}>Sửa</button>
                   <button onClick={() => handleDelete(it.SemesterId)}>Xóa</button>

@@ -7,6 +7,8 @@ interface SemesterBody {
   academicYear?: string;
   startDate?: string;
   endDate?: string;
+  // Việc BG: hạn cuối xếp tiết học thường — để trống (NULL) với Kỳ thêm thủ công, không bắt buộc.
+  teachingEndDate?: string | null;
   classId?: number;
   termNumber?: number;
   isActive?: boolean;
@@ -26,7 +28,7 @@ export async function list(req: AuthRequest, res: Response, next: NextFunction):
       .request()
       .input("classId", sql.Int, classId)
       .query(`
-        SELECT SemesterId, SemesterName, AcademicYear, StartDate, EndDate, ClassId, TermNumber, IsActive
+        SELECT SemesterId, SemesterName, AcademicYear, StartDate, EndDate, TeachingEndDate, ClassId, TermNumber, IsActive
         FROM Semesters WHERE ClassId = @classId
         ORDER BY TermNumber, StartDate
       `);
@@ -38,7 +40,7 @@ export async function list(req: AuthRequest, res: Response, next: NextFunction):
 
 export async function create(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { semesterName, academicYear, startDate, endDate, classId, termNumber } = req.body as SemesterBody;
+    const { semesterName, academicYear, startDate, endDate, teachingEndDate, classId, termNumber } = req.body as SemesterBody;
     if (!semesterName || !academicYear || !startDate || !endDate) {
       res.status(400).json({ message: "Thiếu thông tin đợt học" });
       return;
@@ -50,12 +52,13 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
       .input("academicYear", sql.NVarChar, academicYear)
       .input("startDate", sql.Date, startDate)
       .input("endDate", sql.Date, endDate)
+      .input("teachingEndDate", sql.Date, teachingEndDate || null)
       .input("classId", sql.Int, classId ?? null)
       .input("termNumber", sql.Int, termNumber ?? null)
       .query<{ SemesterId: number }>(`
-        INSERT INTO Semesters (SemesterName, AcademicYear, StartDate, EndDate, ClassId, TermNumber)
+        INSERT INTO Semesters (SemesterName, AcademicYear, StartDate, EndDate, TeachingEndDate, ClassId, TermNumber)
         OUTPUT INSERTED.SemesterId
-        VALUES (@semesterName, @academicYear, @startDate, @endDate, @classId, @termNumber)
+        VALUES (@semesterName, @academicYear, @startDate, @endDate, @teachingEndDate, @classId, @termNumber)
       `);
     res.status(201).json({ semesterId: result.recordset[0].SemesterId });
   } catch (err) {
@@ -66,7 +69,7 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
 export async function update(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   try {
     const { id } = req.params;
-    const { semesterName, academicYear, startDate, endDate, classId, termNumber, isActive } = req.body as SemesterBody;
+    const { semesterName, academicYear, startDate, endDate, teachingEndDate, classId, termNumber, isActive } = req.body as SemesterBody;
     const pool = await getPool();
     await pool
       .request()
@@ -75,12 +78,14 @@ export async function update(req: AuthRequest, res: Response, next: NextFunction
       .input("academicYear", sql.NVarChar, academicYear)
       .input("startDate", sql.Date, startDate)
       .input("endDate", sql.Date, endDate)
+      .input("teachingEndDate", sql.Date, teachingEndDate || null)
       .input("classId", sql.Int, classId ?? null)
       .input("termNumber", sql.Int, termNumber ?? null)
       .input("isActive", sql.Bit, isActive ?? true)
       .query(`
         UPDATE Semesters SET SemesterName=@semesterName, AcademicYear=@academicYear,
-          StartDate=@startDate, EndDate=@endDate, ClassId=@classId, TermNumber=@termNumber, IsActive=@isActive
+          StartDate=@startDate, EndDate=@endDate, TeachingEndDate=@teachingEndDate,
+          ClassId=@classId, TermNumber=@termNumber, IsActive=@isActive
         WHERE SemesterId = @id
       `);
     res.json({ message: "Đã cập nhật" });

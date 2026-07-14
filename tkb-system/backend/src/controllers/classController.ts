@@ -180,14 +180,18 @@ export async function generateTerms(req: AuthRequest, res: Response, next: NextF
     const weeksPerTermKey = trainingMode === "CQ" ? "MinWeeksPerSemesterCQ" : "MinWeeksPerSemesterLT";
     const totalTerms = await getPolicyValue(totalTermsKey);
     const weeksPerTerm = await getPolicyValue(weeksPerTermKey);
+    // Việc BG: dành riêng ExamPeriodWeeks tuần cuối mỗi Kỳ cho thi — TeachingEndDate = EndDate trừ
+    // đi đúng số ngày đó, không xếp tiết học thường sau mốc này (chỉ cảnh báo, không chặn cứng).
+    const examPeriodWeeks = await getPolicyValue("ExamPeriodWeeks");
 
     const created: {
-      semesterId: number; termNumber: number; semesterName: string; startDate: string; endDate: string;
+      semesterId: number; termNumber: number; semesterName: string; startDate: string; endDate: string; teachingEndDate: string;
     }[] = [];
     let cursor = cls.StartDate;
     for (let term = 1; term <= totalTerms; term++) {
       const startDate = cursor;
       const endDate = shiftDateStr(startDate, weeksPerTerm * 7 - 1);
+      const teachingEndDate = shiftDateStr(endDate, -(examPeriodWeeks * 7));
       const semesterName = `Kỳ ${term} - ${cls.ClassName}`;
       const academicYear = academicYearOf(startDate);
 
@@ -197,15 +201,16 @@ export async function generateTerms(req: AuthRequest, res: Response, next: NextF
         .input("academicYear", sql.NVarChar, academicYear)
         .input("startDate", sql.Date, startDate)
         .input("endDate", sql.Date, endDate)
+        .input("teachingEndDate", sql.Date, teachingEndDate)
         .input("classId", sql.Int, id)
         .input("termNumber", sql.Int, term)
         .query<{ SemesterId: number }>(`
-          INSERT INTO Semesters (SemesterName, AcademicYear, StartDate, EndDate, ClassId, TermNumber)
+          INSERT INTO Semesters (SemesterName, AcademicYear, StartDate, EndDate, TeachingEndDate, ClassId, TermNumber)
           OUTPUT INSERTED.SemesterId
-          VALUES (@semesterName, @academicYear, @startDate, @endDate, @classId, @termNumber)
+          VALUES (@semesterName, @academicYear, @startDate, @endDate, @teachingEndDate, @classId, @termNumber)
         `);
       created.push({
-        semesterId: result.recordset[0].SemesterId, termNumber: term, semesterName, startDate, endDate,
+        semesterId: result.recordset[0].SemesterId, termNumber: term, semesterName, startDate, endDate, teachingEndDate,
       });
 
       cursor = shiftDateStr(endDate, 1);

@@ -1,8 +1,8 @@
 import { Response, NextFunction } from "express";
 import { sql, getPool } from "../config/db";
-import { checkScheduleConflict, findHoliday } from "../utils/conflictCheck";
+import { checkScheduleConflict, findHoliday, checkExamPeriodWarning } from "../utils/conflictCheck";
 import { checkTrainingModeRule, getClassTrainingMode } from "../utils/trainingModeCheck";
-import { checkRoomCapacity, checkSessionLength, checkDailyHoursLimit, checkTeacherWeeklyHours, getClassSize, getTotalPeriodsForSubject, getPeriodTimelineForSubject } from "../utils/policyRules";
+import { checkRoomCapacity, checkSessionLength, checkDailyHoursLimit, checkTeacherWeeklyHours, checkTeacherYearlyHours, getClassSize, getTotalPeriodsForSubject, getPeriodTimelineForSubject } from "../utils/policyRules";
 import { writeAuditLog } from "../utils/auditLog";
 import { notifyTeachers } from "../utils/notify";
 import { AuthRequest } from "../types";
@@ -260,11 +260,17 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
       return;
     }
 
-    // Việc BE: chặn cứng nếu BẤT KỲ giảng viên nào trong danh sách vượt định mức giờ dạy/tuần.
+    // Việc BE/BF: chặn cứng nếu BẤT KỲ giảng viên nào trong danh sách vượt định mức giờ dạy/tuần
+    // hoặc/năm.
     for (const teacherId of teacherIds) {
       const weeklyHoursCheck = await checkTeacherWeeklyHours({ teacherId, scheduleDate, roomId, startTime, endTime });
       if (weeklyHoursCheck.violated) {
         res.status(400).json({ message: weeklyHoursCheck.message });
+        return;
+      }
+      const yearlyHoursCheck = await checkTeacherYearlyHours({ teacherId, scheduleDate, roomId, startTime, endTime });
+      if (yearlyHoursCheck.violated) {
+        res.status(400).json({ message: yearlyHoursCheck.message });
         return;
       }
     }
@@ -319,10 +325,12 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
     const trainingCheck = await checkTrainingModeRule({
       classId, scheduleDate, startTime, isMakeup,
     });
+    const examPeriodWarning = await checkExamPeriodWarning(semesterId, scheduleDate);
 
     const warnings: string[] = [];
     if (holiday) warnings.push(`Ngày ${scheduleDate} rơi vào ngày nghỉ lễ: ${holiday.Description}`);
     if (trainingCheck.violated) warnings.push(trainingCheck.message!);
+    if (examPeriodWarning) warnings.push(examPeriodWarning);
 
     res.status(201).json({
       scheduleId,
@@ -375,8 +383,8 @@ export async function update(req: AuthRequest, res: Response, next: NextFunction
       return;
     }
 
-    // Việc BE: chặn cứng nếu BẤT KỲ giảng viên nào trong danh sách vượt định mức giờ dạy/tuần —
-    // loại trừ chính dòng đang sửa (excludeScheduleId) để không tự cộng dồn 2 lần.
+    // Việc BE/BF: chặn cứng nếu BẤT KỲ giảng viên nào trong danh sách vượt định mức giờ dạy/tuần
+    // hoặc/năm — loại trừ chính dòng đang sửa (excludeScheduleId) để không tự cộng dồn 2 lần.
     for (const teacherId of teacherIds) {
       const weeklyHoursCheck = await checkTeacherWeeklyHours({
         teacherId, scheduleDate: scheduleDate as string, roomId: roomId as number,
@@ -384,6 +392,14 @@ export async function update(req: AuthRequest, res: Response, next: NextFunction
       });
       if (weeklyHoursCheck.violated) {
         res.status(400).json({ message: weeklyHoursCheck.message });
+        return;
+      }
+      const yearlyHoursCheck = await checkTeacherYearlyHours({
+        teacherId, scheduleDate: scheduleDate as string, roomId: roomId as number,
+        startTime: startTime as string, endTime: endTime as string, excludeScheduleId: Number(id),
+      });
+      if (yearlyHoursCheck.violated) {
+        res.status(400).json({ message: yearlyHoursCheck.message });
         return;
       }
     }
@@ -439,12 +455,19 @@ export async function update(req: AuthRequest, res: Response, next: NextFunction
       classId: classId as number, scheduleDate: scheduleDate as string, startTime: startTime as string,
       isMakeup, excludeScheduleId: Number(id),
     });
+    // Việc BG: SemesterId không đổi được khi Sửa (không có trong ScheduleBody/form) — tra lại từ
+    // chính dòng đang sửa để biết đúng Kỳ nào áp dụng cảnh báo giai đoạn thi.
+    const semesterResult = await pool.request().input("id", sql.Int, id).query<{ SemesterId: number }>(
+      `SELECT SemesterId FROM Schedule WHERE ScheduleId = @id`
+    );
+    const examPeriodWarning = await checkExamPeriodWarning(semesterResult.recordset[0]?.SemesterId, scheduleDate as string);
 
     const warnings: string[] = [];
     if (holiday) warnings.push(`Ngày ${scheduleDate} rơi vào ngày nghỉ lễ: ${holiday.Description}`);
     if (trainingCheck.violated) warnings.push(trainingCheck.message!);
     if (sessionLengthCheck.violated) warnings.push(sessionLengthCheck.message!);
     if (dailyHoursCheck.violated) warnings.push(dailyHoursCheck.message!);
+    if (examPeriodWarning) warnings.push(examPeriodWarning);
 
     res.json({
       message: "Đã cập nhật lịch học",
@@ -612,8 +635,8 @@ export async function mergedCreate(req: AuthRequest, res: Response, next: NextFu
         return;
       }
 
-      // Việc BE: chặn cứng nếu BẤT KỲ giảng viên nào vượt định mức giờ dạy/tuần — loại trừ chính
-      // MergedSessionId đang tạo (các dòng sibling khác lớp cùng buổi ghép này không tính trùng).
+      // Việc BE/BF: chặn cứng nếu BẤT KỲ giảng viên nào vượt định mức giờ dạy/tuần hoặc/năm — loại
+      // trừ chính MergedSessionId đang tạo (các dòng sibling khác lớp cùng buổi ghép này không tính trùng).
       for (const teacherId of teacherIds) {
         const weeklyHoursCheck = await checkTeacherWeeklyHours({
           teacherId, scheduleDate, roomId, startTime, endTime, excludeMergedSessionId: mergedSessionId,
@@ -624,6 +647,17 @@ export async function mergedCreate(req: AuthRequest, res: Response, next: NextFu
           }
           await pool.request().input("id", sql.Int, mergedSessionId).query(`DELETE FROM MergedSessions WHERE MergedSessionId=@id`);
           res.status(400).json({ message: `${weeklyHoursCheck.message} (lớp ID ${classId})` });
+          return;
+        }
+        const yearlyHoursCheck = await checkTeacherYearlyHours({
+          teacherId, scheduleDate, roomId, startTime, endTime, excludeMergedSessionId: mergedSessionId,
+        });
+        if (yearlyHoursCheck.violated) {
+          for (const scheduleId of scheduleIds) {
+            await pool.request().input("id", sql.Int, scheduleId).query(`DELETE FROM Schedule WHERE ScheduleId=@id`);
+          }
+          await pool.request().input("id", sql.Int, mergedSessionId).query(`DELETE FROM MergedSessions WHERE MergedSessionId=@id`);
+          res.status(400).json({ message: `${yearlyHoursCheck.message} (lớp ID ${classId})` });
           return;
         }
       }
@@ -664,10 +698,12 @@ export async function mergedCreate(req: AuthRequest, res: Response, next: NextFu
     });
 
     const holiday = await findHoliday(scheduleDate, classTrainingInfos[0]?.trainingMode);
+    const examPeriodWarning = await checkExamPeriodWarning(semesterId, scheduleDate);
 
     const warnings: string[] = [];
     if (holiday) warnings.push(`Ngày ${scheduleDate} rơi vào ngày nghỉ lễ: ${holiday.Description}`);
     warnings.push(...new Set(trainingWarnings));
+    if (examPeriodWarning) warnings.push(examPeriodWarning);
 
     res.status(201).json({
       mergedSessionId,
@@ -786,8 +822,9 @@ export async function copyWeek(req: AuthRequest, res: Response, next: NextFuncti
         continue;
       }
 
-      // Việc BE: chặn cứng nếu BẤT KỲ giảng viên nào vượt định mức giờ dạy/tuần ở tuần đích mới —
-      // giữ đúng hành vi BỎ QUA buổi này (không hủy cả lần sao chép) như các kiểm tra khác ở trên.
+      // Việc BE/BF: chặn cứng nếu BẤT KỲ giảng viên nào vượt định mức giờ dạy/tuần hoặc/năm ở
+      // tuần/năm đích mới — giữ đúng hành vi BỎ QUA buổi này (không hủy cả lần sao chép) như các
+      // kiểm tra khác ở trên.
       let weeklyHoursViolated = false;
       for (const teacherId of teacherIds) {
         const weeklyHoursCheck = await checkTeacherWeeklyHours({
@@ -795,6 +832,14 @@ export async function copyWeek(req: AuthRequest, res: Response, next: NextFuncti
         });
         if (weeklyHoursCheck.violated) {
           skippedConflicts.push(`${row.StartTime}-${row.EndTime} ngày ${newDate}: ${weeklyHoursCheck.message}`);
+          weeklyHoursViolated = true;
+          break;
+        }
+        const yearlyHoursCheck = await checkTeacherYearlyHours({
+          teacherId, scheduleDate: newDate, roomId: row.RoomId, startTime: row.StartTime, endTime: row.EndTime,
+        });
+        if (yearlyHoursCheck.violated) {
+          skippedConflicts.push(`${row.StartTime}-${row.EndTime} ngày ${newDate}: ${yearlyHoursCheck.message}`);
           weeklyHoursViolated = true;
           break;
         }
@@ -947,9 +992,9 @@ export async function groupedCreate(req: AuthRequest, res: Response, next: NextF
         return;
       }
 
-      // Việc BE: chặn cứng nếu BẤT KỲ giảng viên nào của nhóm này vượt định mức giờ dạy/tuần —
-      // KHÔNG loại trừ GroupBatchId (khác Ghép lớp): các nhóm tách ra thường học ở NGÀY/CA KHÁC
-      // NHAU nên vẫn là giờ dạy thật riêng biệt, phải cộng dồn đủ qua từng nhóm trong vòng lặp.
+      // Việc BE/BF: chặn cứng nếu BẤT KỲ giảng viên nào của nhóm này vượt định mức giờ dạy/tuần
+      // hoặc/năm — KHÔNG loại trừ GroupBatchId (khác Ghép lớp): các nhóm tách ra thường học ở
+      // NGÀY/CA KHÁC NHAU nên vẫn là giờ dạy thật riêng biệt, phải cộng dồn đủ qua từng nhóm.
       for (const teacherId of group.teacherIds || []) {
         const weeklyHoursCheck = await checkTeacherWeeklyHours({
           teacherId, scheduleDate: group.scheduleDate!, roomId: group.roomId!,
@@ -962,6 +1007,17 @@ export async function groupedCreate(req: AuthRequest, res: Response, next: NextF
           res.status(400).json({ message: `${weeklyHoursCheck.message} (nhóm "${group.groupLabel}")` });
           return;
         }
+        const yearlyHoursCheck = await checkTeacherYearlyHours({
+          teacherId, scheduleDate: group.scheduleDate!, roomId: group.roomId!,
+          startTime: group.startTime!, endTime: group.endTime!,
+        });
+        if (yearlyHoursCheck.violated) {
+          for (const scheduleId of scheduleIds) {
+            await pool.request().input("id", sql.Int, scheduleId).query(`DELETE FROM Schedule WHERE ScheduleId=@id`);
+          }
+          res.status(400).json({ message: `${yearlyHoursCheck.message} (nhóm "${group.groupLabel}")` });
+          return;
+        }
       }
 
       const holiday = await findHoliday(group.scheduleDate!, classInfo?.trainingMode);
@@ -971,6 +1027,9 @@ export async function groupedCreate(req: AuthRequest, res: Response, next: NextF
         classId, scheduleDate: group.scheduleDate!, startTime: group.startTime!, isMakeup,
       });
       if (trainingCheck.violated) warnings.push(`Nhóm "${group.groupLabel}": ${trainingCheck.message}`);
+
+      const examPeriodWarning = await checkExamPeriodWarning(semesterId, group.scheduleDate!);
+      if (examPeriodWarning) warnings.push(`Nhóm "${group.groupLabel}": ${examPeriodWarning}`);
 
       const result = await pool
         .request()

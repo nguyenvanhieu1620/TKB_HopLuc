@@ -144,6 +144,9 @@ export interface Semester {
   AcademicYear: string;
   StartDate: string;
   EndDate: string;
+  // Việc BG: hạn cuối xếp tiết học thường — sau ngày này dành riêng cho thi cuối kỳ. NULL với Kỳ
+  // thêm thủ công chưa điền, hoặc chưa từng chạy "Tự động tạo các Kỳ".
+  TeachingEndDate: string | null;
   ClassId: number | null;
   TermNumber: number | null;
   IsActive: boolean;
