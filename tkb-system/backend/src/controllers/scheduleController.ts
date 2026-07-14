@@ -2,7 +2,7 @@ import { Response, NextFunction } from "express";
 import { sql, getPool } from "../config/db";
 import { checkScheduleConflict, findHoliday } from "../utils/conflictCheck";
 import { checkTrainingModeRule, getClassTrainingMode } from "../utils/trainingModeCheck";
-import { checkRoomCapacity, checkSessionLength, checkDailyHoursLimit, getClassSize, getTotalPeriodsForSubject, getPeriodTimelineForSubject } from "../utils/policyRules";
+import { checkRoomCapacity, checkSessionLength, checkDailyHoursLimit, checkTeacherWeeklyHours, getClassSize, getTotalPeriodsForSubject, getPeriodTimelineForSubject } from "../utils/policyRules";
 import { writeAuditLog } from "../utils/auditLog";
 import { notifyTeachers } from "../utils/notify";
 import { AuthRequest } from "../types";
@@ -260,6 +260,15 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
       return;
     }
 
+    // Việc BE: chặn cứng nếu BẤT KỲ giảng viên nào trong danh sách vượt định mức giờ dạy/tuần.
+    for (const teacherId of teacherIds) {
+      const weeklyHoursCheck = await checkTeacherWeeklyHours({ teacherId, scheduleDate, roomId, startTime, endTime });
+      if (weeklyHoursCheck.violated) {
+        res.status(400).json({ message: weeklyHoursCheck.message });
+        return;
+      }
+    }
+
     const pool = await getPool();
     const result = await pool
       .request()
@@ -364,6 +373,19 @@ export async function update(req: AuthRequest, res: Response, next: NextFunction
     if (dailyHoursCheck.violated) {
       res.status(400).json({ message: dailyHoursCheck.message });
       return;
+    }
+
+    // Việc BE: chặn cứng nếu BẤT KỲ giảng viên nào trong danh sách vượt định mức giờ dạy/tuần —
+    // loại trừ chính dòng đang sửa (excludeScheduleId) để không tự cộng dồn 2 lần.
+    for (const teacherId of teacherIds) {
+      const weeklyHoursCheck = await checkTeacherWeeklyHours({
+        teacherId, scheduleDate: scheduleDate as string, roomId: roomId as number,
+        startTime: startTime as string, endTime: endTime as string, excludeScheduleId: Number(id),
+      });
+      if (weeklyHoursCheck.violated) {
+        res.status(400).json({ message: weeklyHoursCheck.message });
+        return;
+      }
     }
 
     const pool = await getPool();
@@ -590,6 +612,22 @@ export async function mergedCreate(req: AuthRequest, res: Response, next: NextFu
         return;
       }
 
+      // Việc BE: chặn cứng nếu BẤT KỲ giảng viên nào vượt định mức giờ dạy/tuần — loại trừ chính
+      // MergedSessionId đang tạo (các dòng sibling khác lớp cùng buổi ghép này không tính trùng).
+      for (const teacherId of teacherIds) {
+        const weeklyHoursCheck = await checkTeacherWeeklyHours({
+          teacherId, scheduleDate, roomId, startTime, endTime, excludeMergedSessionId: mergedSessionId,
+        });
+        if (weeklyHoursCheck.violated) {
+          for (const scheduleId of scheduleIds) {
+            await pool.request().input("id", sql.Int, scheduleId).query(`DELETE FROM Schedule WHERE ScheduleId=@id`);
+          }
+          await pool.request().input("id", sql.Int, mergedSessionId).query(`DELETE FROM MergedSessions WHERE MergedSessionId=@id`);
+          res.status(400).json({ message: `${weeklyHoursCheck.message} (lớp ID ${classId})` });
+          return;
+        }
+      }
+
       const result = await pool
         .request()
         .input("semesterId", sql.Int, semesterId)
@@ -748,6 +786,21 @@ export async function copyWeek(req: AuthRequest, res: Response, next: NextFuncti
         continue;
       }
 
+      // Việc BE: chặn cứng nếu BẤT KỲ giảng viên nào vượt định mức giờ dạy/tuần ở tuần đích mới —
+      // giữ đúng hành vi BỎ QUA buổi này (không hủy cả lần sao chép) như các kiểm tra khác ở trên.
+      let weeklyHoursViolated = false;
+      for (const teacherId of teacherIds) {
+        const weeklyHoursCheck = await checkTeacherWeeklyHours({
+          teacherId, scheduleDate: newDate, roomId: row.RoomId, startTime: row.StartTime, endTime: row.EndTime,
+        });
+        if (weeklyHoursCheck.violated) {
+          skippedConflicts.push(`${row.StartTime}-${row.EndTime} ngày ${newDate}: ${weeklyHoursCheck.message}`);
+          weeklyHoursViolated = true;
+          break;
+        }
+      }
+      if (weeklyHoursViolated) continue;
+
       const insertResult = await pool
         .request()
         .input("semesterId", sql.Int, row.SemesterId)
@@ -892,6 +945,23 @@ export async function groupedCreate(req: AuthRequest, res: Response, next: NextF
         }
         res.status(400).json({ message: `${dailyHoursCheck.message} (nhóm "${group.groupLabel}")` });
         return;
+      }
+
+      // Việc BE: chặn cứng nếu BẤT KỲ giảng viên nào của nhóm này vượt định mức giờ dạy/tuần —
+      // KHÔNG loại trừ GroupBatchId (khác Ghép lớp): các nhóm tách ra thường học ở NGÀY/CA KHÁC
+      // NHAU nên vẫn là giờ dạy thật riêng biệt, phải cộng dồn đủ qua từng nhóm trong vòng lặp.
+      for (const teacherId of group.teacherIds || []) {
+        const weeklyHoursCheck = await checkTeacherWeeklyHours({
+          teacherId, scheduleDate: group.scheduleDate!, roomId: group.roomId!,
+          startTime: group.startTime!, endTime: group.endTime!,
+        });
+        if (weeklyHoursCheck.violated) {
+          for (const scheduleId of scheduleIds) {
+            await pool.request().input("id", sql.Int, scheduleId).query(`DELETE FROM Schedule WHERE ScheduleId=@id`);
+          }
+          res.status(400).json({ message: `${weeklyHoursCheck.message} (nhóm "${group.groupLabel}")` });
+          return;
+        }
       }
 
       const holiday = await findHoliday(group.scheduleDate!, classInfo?.trainingMode);

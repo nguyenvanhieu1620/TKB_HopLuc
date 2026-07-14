@@ -353,3 +353,104 @@ export async function getPeriodTimelineForSubject(classId: number, subjectId: nu
   }));
   return timeline;
 }
+
+// Việc BE: Thứ 2 (đầu tuần) chứa 1 ngày bất kỳ — tính bằng UTC để tránh lệch múi giờ server, cùng
+// quy ước "Thứ 2 đầu tuần" đã dùng ở frontend (utils/calendar.ts's startOfWeek: day===0 ? -6 : 1-day).
+function mondayOfWeekContaining(dateStr: string): string {
+  const [y, m, d] = dateStr.slice(0, 10).split("-").map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  const day = date.getUTCDay(); // 0=CN, 1=T2, ... 6=T7
+  const diff = day === 0 ? -6 : 1 - day;
+  date.setUTCDate(date.getUTCDate() + diff);
+  return date.toISOString().slice(0, 10);
+}
+
+interface TeacherWeeklyHoursCheckParams {
+  teacherId: number;
+  scheduleDate: string;
+  roomId: number;
+  startTime: string;
+  endTime: string;
+  excludeScheduleId?: number | null;
+  excludeMergedSessionId?: number | null;
+}
+interface TeacherWeeklyHoursCheckResult {
+  violated: boolean;
+  currentHours: number;
+  maxHours: number;
+  message?: string;
+}
+
+// Việc BE: chặn cứng nếu tổng "giờ dạy chuẩn" của 1 GV trong TUẦN (Thứ 2-CN) chứa scheduleDate vượt
+// MaxTeachingHoursPerWeek — khác với định mức/NĂM (đã có ở reportController.teachingHours), mục
+// đích tránh GV bị dồn quá tải 1 tuần cụ thể dù tổng năm vẫn còn dư định mức. "Giờ dạy chuẩn" quy
+// đổi phút thực theo TheoryPeriodMinutes/PracticePeriodMinutes — CÙNG quy ước đơn vị với
+// MaxTeachingHoursPerYear (reportController.teachingHours), không phải giờ đồng hồ thô, để nhất
+// quán trong cùng họ policy "MaxTeachingHours*".
+// Ghép lớp (MergedSessionId khác NULL) tạo nhiều dòng Schedule (1 dòng/lớp) cho CÙNG 1 buổi dạy
+// thật của GV — chỉ tính 1 lần/MergedSessionId, tránh nhân đôi/ba giờ dạy của 1 buổi ghép nhiều lớp.
+// KHÔNG áp dụng dedup tương tự cho Tách nhóm (GroupBatchId, Việc BB): các nhóm tách ra thường học ở
+// THỜI ĐIỂM KHÁC NHAU (xoay vòng dùng chung phòng) nên với GV đó vẫn là giờ dạy thật riêng biệt,
+// khác bản chất với Ghép lớp (luôn CÙNG giờ, chỉ khác lớp tham gia).
+export async function checkTeacherWeeklyHours({
+  teacherId, scheduleDate, roomId, startTime, endTime,
+  excludeScheduleId = null, excludeMergedSessionId = null,
+}: TeacherWeeklyHoursCheckParams): Promise<TeacherWeeklyHoursCheckResult> {
+  const maxHours = await getPolicyValue("MaxTeachingHoursPerWeek");
+  const room = await getRoomInfo(roomId);
+  if (!room) return { violated: false, currentHours: 0, maxHours };
+
+  const weekStart = mondayOfWeekContaining(scheduleDate);
+  const weekEndDate = new Date(`${weekStart}T00:00:00Z`);
+  weekEndDate.setUTCDate(weekEndDate.getUTCDate() + 6);
+  const weekEnd = weekEndDate.toISOString().slice(0, 10);
+
+  const pool = await getPool();
+  const existingResult = await pool
+    .request()
+    .input("teacherId", sql.Int, teacherId)
+    .input("weekStart", sql.Date, weekStart)
+    .input("weekEnd", sql.Date, weekEnd)
+    .input("excludeId", sql.Int, excludeScheduleId)
+    .input("excludeMergedId", sql.Int, excludeMergedSessionId)
+    .query<{ ScheduleId: number; MergedSessionId: number | null; RoomType: string; StartTime: string; EndTime: string }>(`
+      SELECT s.ScheduleId, s.MergedSessionId, r.RoomType,
+             CONVERT(VARCHAR(5), s.StartTime, 108) AS StartTime, CONVERT(VARCHAR(5), s.EndTime, 108) AS EndTime
+      FROM Schedule s
+      INNER JOIN ScheduleTeachers st ON st.ScheduleId = s.ScheduleId
+      INNER JOIN Rooms r ON r.RoomId = s.RoomId
+      WHERE st.TeacherId = @teacherId AND s.ScheduleDate BETWEEN @weekStart AND @weekEnd
+        AND (@excludeId IS NULL OR s.ScheduleId <> @excludeId)
+        AND (@excludeMergedId IS NULL OR s.MergedSessionId IS NULL OR s.MergedSessionId <> @excludeMergedId)
+    `);
+
+  const seenMergedSessions = new Set<number>();
+  let currentHours = 0;
+  for (const row of existingResult.recordset) {
+    if (row.MergedSessionId != null) {
+      if (seenMergedSessions.has(row.MergedSessionId)) continue;
+      seenMergedSessions.add(row.MergedSessionId);
+    }
+    const periodMinutes = await getPeriodMinutes(row.RoomType);
+    currentHours += diffMinutes(row.StartTime, row.EndTime) / periodMinutes;
+  }
+
+  const addedPeriodMinutes = await getPeriodMinutes(room.RoomType);
+  const addedHours = diffMinutes(startTime, endTime) / addedPeriodMinutes;
+  const totalHours = currentHours + addedHours;
+
+  if (totalHours > maxHours) {
+    const teacherResult = await pool
+      .request()
+      .input("teacherId", sql.Int, teacherId)
+      .query<{ FullName: string }>(`SELECT FullName FROM Teachers WHERE TeacherId = @teacherId`);
+    const teacherName = teacherResult.recordset[0]?.FullName ?? `GV #${teacherId}`;
+    return {
+      violated: true,
+      currentHours: Math.round(currentHours * 10) / 10,
+      maxHours,
+      message: `GV ${teacherName} đã dạy ${Math.round(currentHours * 10) / 10}/${maxHours} giờ trong tuần này, tiết này cần thêm ${Math.round(addedHours * 10) / 10} giờ — vượt định mức giờ dạy/tuần`,
+    };
+  }
+  return { violated: false, currentHours: Math.round(currentHours * 10) / 10, maxHours };
+}
