@@ -932,6 +932,19 @@ export async function groupedCreate(req: AuthRequest, res: Response, next: NextF
       }
     }
 
+    // Việc BB: đánh dấu mọi dòng vừa tạo trong lần tách nhóm này cùng 1 GroupBatchId (= ScheduleId
+    // của nhóm đầu tiên) — dùng để tính TIẾN ĐỘ môn học không đếm trùng, vì các nhóm học song
+    // song/xoay vòng thực chất chỉ là 1 buổi học, không phải nhiều buổi lặp lại (getPeriodTimelineForSubject).
+    const groupBatchId = scheduleIds[0];
+    const batchRequest = pool.request().input("batchId", sql.Int, groupBatchId);
+    const idPlaceholders = scheduleIds
+      .map((id, i) => {
+        batchRequest.input(`sid${i}`, sql.Int, id);
+        return `@sid${i}`;
+      })
+      .join(", ");
+    await batchRequest.query(`UPDATE Schedule SET GroupBatchId = @batchId WHERE ScheduleId IN (${idPlaceholders})`);
+
     await writeAuditLog({
       userId: req.user!.userId, action: "Insert", tableName: "Schedule",
       recordId: scheduleIds[0], detail: req.body,

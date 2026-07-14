@@ -374,6 +374,10 @@ CREATE TABLE Schedule (
     -- Thực hành của môn, vì PracticeMode=LyThuyet khiến 1 buổi Thực hành vẫn dùng phòng Lý thuyết
     -- (RoomType không còn đủ để suy luận đúng). NULL = dữ liệu cũ, fallback suy theo RoomType.
     SessionType      NVARCHAR(10)    NULL,
+    -- Việc BB: đánh dấu các dòng Schedule cùng thuộc 1 lần Tách nhóm (groupedCreate) — mang chung
+    -- giá trị = ScheduleId của nhóm đầu tiên trong lô. Dùng để tính TIẾN ĐỘ môn học không đếm trùng
+    -- (các nhóm học song song/xoay vòng chỉ là 1 buổi thực chất, không phải nhiều buổi lặp lại).
+    GroupBatchId     INT             NULL,
     Note             NVARCHAR(500)   NULL,
     CreatedBy        INT             NULL,
     CreatedAt        DATETIME2       NOT NULL DEFAULT SYSDATETIME(),

@@ -120,9 +120,12 @@ export async function eligible(req: AuthRequest, res: Response, next: NextFuncti
               `SELECT COUNT(*) AS Count FROM Exams WHERE ClassId=@classId AND SubjectId=@subjectId AND SemesterId=@semesterId`
             ),
         ]);
-        const last = timeline[timeline.length - 1];
-        const theoryDone = last?.cumulativeTheoryPeriods ?? 0;
-        const practiceDone = last?.cumulativePracticePeriods ?? 0;
+        // Việc BB: timeline nay có thể lặp lại cùng 1 giá trị lũy kế cho nhiều dòng (các nhóm tách
+        // ra từ 1 lần groupedCreate dùng chung kết quả của dòng đại diện) và dòng cuối mảng KHÔNG
+        // còn chắc là dòng có Ngày muộn nhất (1 nhóm có thể tự chọn Ngày muộn hơn dòng đại diện của
+        // chính lô đó) — lấy MAX thay vì phần tử cuối để luôn ra đúng tổng lũy kế cao nhất thực tế.
+        const theoryDone = timeline.reduce((max, t) => Math.max(max, t.cumulativeTheoryPeriods), 0);
+        const practiceDone = timeline.reduce((max, t) => Math.max(max, t.cumulativePracticePeriods), 0);
         return {
           ClassId: row.ClassId,
           ClassName: row.ClassName,

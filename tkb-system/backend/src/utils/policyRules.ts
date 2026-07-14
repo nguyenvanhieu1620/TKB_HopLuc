@@ -288,14 +288,25 @@ export interface PeriodTimelineEntry {
 // cột này). ĐỘ DÀI phút/tiết thì vẫn luôn tính theo RoomType thật của phòng (1 tiết tại phòng Lý
 // thuyết luôn là 45 phút bất kể buổi đó phục vụ mục đích Lý thuyết hay Thực hành) — SessionType chỉ
 // quyết định buổi cộng vào chỉ tiêu nào, không đổi độ dài vật lý của 1 tiết trong phòng đó.
+// Việc BB: các dòng Schedule cùng GroupBatchId (tách nhóm học song song/xoay vòng trong 1 lần
+// groupedCreate) thực chất chỉ là 1 buổi học của lớp, không phải nhiều buổi lặp lại — CHỈ 1 dòng
+// đại diện (ScheduleId nhỏ nhất trong lô, RepScheduleId) được dùng để cộng vào tiến độ. Các dòng còn
+// lại cùng lô KHÔNG cộng thêm lần nữa, nhưng vẫn được trả về (với category/periodsThisSession/
+// cumulative* giống hệt dòng đại diện) để mọi thẻ buổi học trên lịch — kể cả các nhóm không phải đại
+// diện — đều hiện đúng cùng 1 tiến độ, thay vì chỉ nhóm đầu tiên hiện còn các nhóm khác trống trơn.
+// COALESCE(GroupBatchId, ScheduleId) khiến các dòng KHÔNG tách nhóm (GroupBatchId NULL) tự thành 1
+// lô riêng của chính nó nên vẫn được tính bình thường, không bị ảnh hưởng.
 export async function getPeriodTimelineForSubject(classId: number, subjectId: number): Promise<PeriodTimelineEntry[]> {
   const pool = await getPool();
   const rowsResult = await pool
     .request()
     .input("classId", sql.Int, classId)
     .input("subjectId", sql.Int, subjectId)
-    .query<{ ScheduleId: number; RoomType: string; SessionType: string | null; StartTime: string; EndTime: string }>(`
-      SELECT s.ScheduleId, r.RoomType, s.SessionType, CONVERT(VARCHAR(5), s.StartTime, 108) AS StartTime, CONVERT(VARCHAR(5), s.EndTime, 108) AS EndTime
+    .query<{ ScheduleId: number; RepScheduleId: number; RoomType: string; SessionType: string | null; StartTime: string; EndTime: string }>(`
+      SELECT s.ScheduleId, r.RoomType, s.SessionType,
+             CONVERT(VARCHAR(5), s.StartTime, 108) AS StartTime, CONVERT(VARCHAR(5), s.EndTime, 108) AS EndTime,
+             s.ScheduleDate,
+             MIN(s.ScheduleId) OVER (PARTITION BY COALESCE(s.GroupBatchId, s.ScheduleId)) AS RepScheduleId
       FROM Schedule s
       INNER JOIN Rooms r ON r.RoomId = s.RoomId
       WHERE s.ClassId = @classId AND s.SubjectId = @subjectId
@@ -304,10 +315,15 @@ export async function getPeriodTimelineForSubject(classId: number, subjectId: nu
 
   const periodMinutesCache = new Map<string, number>();
 
+  // Bước 1: chỉ cộng dồn qua các dòng ĐẠI DIỆN (1 dòng/lô), theo đúng thứ tự thời gian CỦA CHÍNH
+  // các dòng đại diện đó — không dùng thứ tự xen kẽ với các dòng không-đại-diện trong cùng lô (1
+  // nhóm có ScheduleId nhỏ nhất chưa chắc có Ngày sớm nhất, vì Việc AY cho mỗi nhóm tự chọn Ngày/Ca
+  // riêng độc lập với thứ tự tạo).
   let cumulativeTheory = 0;
   let cumulativePractice = 0;
-  const timeline: PeriodTimelineEntry[] = [];
+  const batchResults = new Map<number, Omit<PeriodTimelineEntry, "scheduleId">>();
   for (const row of rowsResult.recordset) {
+    if (row.ScheduleId !== row.RepScheduleId) continue;
     const category: SessionCategory | null =
       row.SessionType === "Theory" ? "LyThuyet"
       : row.SessionType === "Practice" ? "ThucHanh"
@@ -321,13 +337,19 @@ export async function getPeriodTimelineForSubject(classId: number, subjectId: nu
     const periods = diffMinutes(row.StartTime, row.EndTime) / periodMinutes;
     if (category === "LyThuyet") cumulativeTheory += periods;
     else if (category === "ThucHanh") cumulativePractice += periods;
-    timeline.push({
-      scheduleId: row.ScheduleId,
+    batchResults.set(row.RepScheduleId, {
       category,
       periodsThisSession: Math.round(periods * 10) / 10,
       cumulativeTheoryPeriods: Math.round(cumulativeTheory * 10) / 10,
       cumulativePracticePeriods: Math.round(cumulativePractice * 10) / 10,
     });
   }
+
+  // Bước 2: mọi dòng gốc (kể cả dòng không-đại-diện) đều được trả về, dùng CHUNG kết quả của lô —
+  // để mọi thẻ buổi học trên lịch, kể cả các nhóm không phải đại diện, hiện đúng cùng 1 tiến độ.
+  const timeline: PeriodTimelineEntry[] = rowsResult.recordset.map((row) => ({
+    scheduleId: row.ScheduleId,
+    ...batchResults.get(row.RepScheduleId)!,
+  }));
   return timeline;
 }
