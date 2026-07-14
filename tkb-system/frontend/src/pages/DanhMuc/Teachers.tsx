@@ -1,9 +1,9 @@
-import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import axiosClient from "../../api/axiosClient";
 import { Teacher, TeacherDetail, Faculty, Position, Subject, TeacherUnavailability, BulkImportResult, ApiErrorResponse } from "../../types";
 import { AxiosError } from "axios";
 import { readWorkbook, sheetToRows, buildWorkbook, downloadWorkbook } from "../../../utils/excel";
-import { subjectLabel } from "../../../utils/text";
+import { normalizeText, subjectLabel } from "../../../utils/text";
 
 interface TeacherForm {
   fullName: string;
@@ -62,6 +62,23 @@ function parseImportRow(raw: ExcelTeacherRow, rowNum: number, faculties: Faculty
   return { rowNum, fullName, facultyRaw, facultyId, positionRaw, positionId, phone, email, error, selected: !error };
 }
 
+// Việc BC: checkbox "cha" của 1 nhóm môn cùng tên (nhiều mã khác nhau theo Ngành) — tick/bỏ tick 1
+// lần áp dụng cho TẤT CẢ mã con trong nhóm. `indeterminate` không phải prop JSX chuẩn nên phải set
+// trực tiếp qua ref khi chỉ MỘT PHẦN mã con đang được chọn.
+function SubjectGroupCheckbox({
+  ids, subjectIds, onToggle,
+}: { ids: number[]; subjectIds: string[]; onToggle: (checkAll: boolean) => void }) {
+  const idStrs = useMemo(() => ids.map(String), [ids]);
+  const checkedCount = idStrs.filter((id) => subjectIds.includes(id)).length;
+  const allChecked = checkedCount === idStrs.length;
+  const someChecked = checkedCount > 0 && !allChecked;
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = someChecked;
+  }, [someChecked]);
+  return <input type="checkbox" ref={ref} checked={allChecked} onChange={(e) => onToggle(e.target.checked)} />;
+}
+
 export default function Teachers() {
   const [items, setItems] = useState<Teacher[]>([]);
   const [faculties, setFaculties] = useState<Faculty[]>([]);
@@ -86,6 +103,44 @@ export default function Teachers() {
     () => subjects.filter((s) => s.IsActive || form.subjectIds.includes(String(s.SubjectId))),
     [subjects, form.subjectIds]
   );
+
+  // Việc BC: Môn học nay tách riêng theo Ngành (mỗi ngành 1 mã, có thể trùng tên) — 1 GV dạy chung 1
+  // môn cho nhiều ngành phải tick từng mã. Nhóm theo TÊN MÔN đã chuẩn hóa để hiện 1 checkbox "cha"
+  // cho các môn có từ 2 mã trùng tên trở lên, cho phép tick nhanh cả nhóm.
+  const [subjectSearch, setSubjectSearch] = useState("");
+  const subjectGroups = useMemo(() => {
+    const map = new Map<string, { displayName: string; items: Subject[] }>();
+    for (const s of selectableSubjects) {
+      const key = normalizeText(s.SubjectName);
+      if (!map.has(key)) map.set(key, { displayName: s.SubjectName, items: [] });
+      map.get(key)!.items.push(s);
+    }
+    return [...map.values()].sort((a, b) => a.displayName.localeCompare(b.displayName));
+  }, [selectableSubjects]);
+
+  const filteredSubjectGroups = useMemo(() => {
+    const q = normalizeText(subjectSearch);
+    if (!q) return subjectGroups;
+    return subjectGroups.filter((g) => normalizeText(g.displayName).includes(q));
+  }, [subjectGroups, subjectSearch]);
+
+  function toggleSubject(id: number) {
+    const idStr = String(id);
+    setForm((f) => ({
+      ...f,
+      subjectIds: f.subjectIds.includes(idStr) ? f.subjectIds.filter((x) => x !== idStr) : [...f.subjectIds, idStr],
+    }));
+  }
+
+  function toggleSubjectGroup(ids: number[], checkAll: boolean) {
+    const idStrs = ids.map(String);
+    setForm((f) => ({
+      ...f,
+      subjectIds: checkAll
+        ? Array.from(new Set([...f.subjectIds, ...idStrs]))
+        : f.subjectIds.filter((x) => !idStrs.includes(x)),
+    }));
+  }
 
   async function load() {
     const [teacherRes, facultyRes, positionRes, subjectRes, unavailRes] = await Promise.all([
@@ -344,15 +399,43 @@ export default function Teachers() {
         <input placeholder="Email" value={form.email}
           onChange={(e) => setForm({ ...form, email: e.target.value })} />
         <div>
-          <select multiple value={form.subjectIds} className="w-full"
-            onChange={(e) => setForm({ ...form, subjectIds: [...e.target.selectedOptions].map((o) => o.value) })}>
-            {selectableSubjects.map((s) => (
-              <option key={s.SubjectId} value={s.SubjectId}>
-                {subjectLabel(s)}{!s.IsActive ? " (Ngừng dùng)" : ""}
-              </option>
-            ))}
-          </select>
-          <div className="hint mt-1">Môn có thể dạy — giữ Ctrl (Windows) / Cmd (Mac) để chọn nhiều môn</div>
+          <input type="text" placeholder="Tìm môn theo tên..." value={subjectSearch} className="w-full mb-1"
+            onChange={(e) => setSubjectSearch(e.target.value)} />
+          <div className="subject-picker-list">
+            {filteredSubjectGroups.length === 0 && <div className="hint">Không tìm thấy môn nào khớp.</div>}
+            {filteredSubjectGroups.map((g) => {
+              if (g.items.length === 1) {
+                const s = g.items[0];
+                return (
+                  <label key={s.SubjectId} className="flex items-center gap-2">
+                    <input type="checkbox" checked={form.subjectIds.includes(String(s.SubjectId))}
+                      onChange={() => toggleSubject(s.SubjectId)} />
+                    {subjectLabel(s)}{!s.IsActive ? " (Ngừng dùng)" : ""}
+                  </label>
+                );
+              }
+              const ids = g.items.map((s) => s.SubjectId);
+              return (
+                <div key={g.displayName}>
+                  <label className="flex items-center gap-2 font-medium">
+                    <SubjectGroupCheckbox ids={ids} subjectIds={form.subjectIds}
+                      onToggle={(checkAll) => toggleSubjectGroup(ids, checkAll)} />
+                    {g.displayName} ({g.items.length} ngành)
+                  </label>
+                  <div className="pl-5">
+                    {g.items.map((s) => (
+                      <label key={s.SubjectId} className="flex items-center gap-2">
+                        <input type="checkbox" checked={form.subjectIds.includes(String(s.SubjectId))}
+                          onChange={() => toggleSubject(s.SubjectId)} />
+                        {subjectLabel(s)}{!s.IsActive ? " (Ngừng dùng)" : ""}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="hint mt-1">Môn có thể dạy — tick checkbox "cha" để chọn nhanh mọi mã cùng tên (mọi ngành)</div>
         </div>
         <button type="submit">{editingId ? "Cập nhật" : "Thêm mới"}</button>
         {editingId && <button type="button" onClick={resetForm}>Hủy</button>}
