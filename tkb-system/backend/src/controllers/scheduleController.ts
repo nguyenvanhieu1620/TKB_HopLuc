@@ -43,6 +43,7 @@ interface ScheduleBody {
   endTime?: string;
   note?: string;
   isMakeup?: boolean;
+  sessionType?: string;
 }
 
 export async function list(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
@@ -174,13 +175,14 @@ export async function getById(req: AuthRequest, res: Response, next: NextFunctio
       SubjectId: number; SubjectName: string; RoomId: number; RoomName: string; RoomType: string;
       ScheduleDate: string; StartTime: string; EndTime: string; Note: string | null;
       MergedSessionId: number | null; GroupLabel: string | null; TermNumber: number | null;
+      SessionType: string | null;
     }>(`
       SELECT s.ScheduleId, s.ClassId, c.ClassName, c.MajorId, c.CohortId,
              s.SubjectId, sub.SubjectName, s.RoomId, r.RoomName, r.RoomType,
              CONVERT(VARCHAR(10), s.ScheduleDate, 23) AS ScheduleDate,
              CONVERT(VARCHAR(5), s.StartTime, 108) AS StartTime,
              CONVERT(VARCHAR(5), s.EndTime, 108) AS EndTime,
-             s.Note, s.MergedSessionId, s.GroupLabel, sem.TermNumber
+             s.Note, s.MergedSessionId, s.GroupLabel, sem.TermNumber, s.SessionType
       FROM Schedule s
       INNER JOIN Classes c ON c.ClassId = s.ClassId
       INNER JOIN Subjects sub ON sub.SubjectId = s.SubjectId
@@ -222,7 +224,7 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
   try {
     const {
       semesterId, classId, subjectId, roomId, teacherIds = [],
-      scheduleDate, startTime, endTime, note, isMakeup,
+      scheduleDate, startTime, endTime, note, isMakeup, sessionType,
     } = req.body as ScheduleBody;
 
     if (!semesterId || !classId || !subjectId || !roomId || !scheduleDate || !startTime || !endTime) {
@@ -269,11 +271,12 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
       .input("startTime", sql.VarChar, startTime)
       .input("endTime", sql.VarChar, endTime)
       .input("note", sql.NVarChar, note || null)
+      .input("sessionType", sql.NVarChar, sessionType || null)
       .input("createdBy", sql.Int, req.user!.userId)
       .query<{ ScheduleId: number }>(`
-        INSERT INTO Schedule (SemesterId, ClassId, SubjectId, RoomId, ScheduleDate, StartTime, EndTime, Note, CreatedBy)
+        INSERT INTO Schedule (SemesterId, ClassId, SubjectId, RoomId, ScheduleDate, StartTime, EndTime, Note, SessionType, CreatedBy)
         OUTPUT INSERTED.ScheduleId
-        VALUES (@semesterId, @classId, @subjectId, @roomId, @scheduleDate, @startTime, @endTime, @note, @createdBy)
+        VALUES (@semesterId, @classId, @subjectId, @roomId, @scheduleDate, @startTime, @endTime, @note, @sessionType, @createdBy)
       `);
     const scheduleId = result.recordset[0].ScheduleId;
 
@@ -326,7 +329,7 @@ export async function update(req: AuthRequest, res: Response, next: NextFunction
     const { id } = req.params;
     const {
       classId, subjectId, roomId, teacherIds = [],
-      scheduleDate, startTime, endTime, note, isMakeup,
+      scheduleDate, startTime, endTime, note, isMakeup, sessionType,
     } = req.body as ScheduleBody;
 
     const conflict = await checkScheduleConflict({
@@ -374,10 +377,11 @@ export async function update(req: AuthRequest, res: Response, next: NextFunction
       .input("startTime", sql.VarChar, startTime)
       .input("endTime", sql.VarChar, endTime)
       .input("note", sql.NVarChar, note || null)
+      .input("sessionType", sql.NVarChar, sessionType || null)
       .query(`
         UPDATE Schedule SET ClassId=@classId, SubjectId=@subjectId, RoomId=@roomId,
           ScheduleDate=@scheduleDate, StartTime=@startTime, EndTime=@endTime,
-          Note=@note, UpdatedAt=SYSDATETIME()
+          Note=@note, SessionType=@sessionType, UpdatedAt=SYSDATETIME()
         WHERE ScheduleId=@id
       `);
 
@@ -486,6 +490,7 @@ interface MergedScheduleBody {
   endTime?: string;
   note?: string;
   isMakeup?: boolean;
+  sessionType?: string;
 }
 
 // Ghép lớp: nhiều lớp cùng học 1 buổi (chung phòng/giờ/giảng viên). Tạo 1 dòng
@@ -496,7 +501,7 @@ export async function mergedCreate(req: AuthRequest, res: Response, next: NextFu
   try {
     const {
       semesterId, classIds = [], subjectId, roomId, teacherIds = [],
-      scheduleDate, startTime, endTime, note, isMakeup,
+      scheduleDate, startTime, endTime, note, isMakeup, sessionType,
     } = req.body as MergedScheduleBody;
 
     if (!semesterId || !Array.isArray(classIds) || classIds.length < 2 || !subjectId || !roomId
@@ -595,12 +600,13 @@ export async function mergedCreate(req: AuthRequest, res: Response, next: NextFu
         .input("startTime", sql.VarChar, startTime)
         .input("endTime", sql.VarChar, endTime)
         .input("note", sql.NVarChar, note || null)
+        .input("sessionType", sql.NVarChar, sessionType || null)
         .input("mergedSessionId", sql.Int, mergedSessionId)
         .input("createdBy", sql.Int, req.user!.userId)
         .query<{ ScheduleId: number }>(`
-          INSERT INTO Schedule (SemesterId, ClassId, SubjectId, RoomId, ScheduleDate, StartTime, EndTime, Note, MergedSessionId, CreatedBy)
+          INSERT INTO Schedule (SemesterId, ClassId, SubjectId, RoomId, ScheduleDate, StartTime, EndTime, Note, SessionType, MergedSessionId, CreatedBy)
           OUTPUT INSERTED.ScheduleId
-          VALUES (@semesterId, @classId, @subjectId, @roomId, @scheduleDate, @startTime, @endTime, @note, @mergedSessionId, @createdBy)
+          VALUES (@semesterId, @classId, @subjectId, @roomId, @scheduleDate, @startTime, @endTime, @note, @sessionType, @mergedSessionId, @createdBy)
         `);
       const scheduleId = result.recordset[0].ScheduleId;
       scheduleIds.push(scheduleId);
@@ -809,6 +815,7 @@ interface GroupedScheduleBody {
   subjectId?: number;
   note?: string;
   isMakeup?: boolean;
+  sessionType?: string;
   groups?: GroupedScheduleGroup[];
 }
 
@@ -819,7 +826,7 @@ interface GroupedScheduleBody {
 // hành, 3 nhóm học các buổi khác nhau thay vì bắt buộc cùng giờ).
 export async function groupedCreate(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { semesterId, classId, subjectId, note, isMakeup, groups = [] } = req.body as GroupedScheduleBody;
+    const { semesterId, classId, subjectId, note, isMakeup, sessionType, groups = [] } = req.body as GroupedScheduleBody;
 
     if (!semesterId || !classId || !subjectId || !Array.isArray(groups) || groups.length < 2) {
       res.status(400).json({ message: "Cần chọn ít nhất 2 nhóm và đủ thông tin bắt buộc để tách nhóm" });
@@ -905,12 +912,13 @@ export async function groupedCreate(req: AuthRequest, res: Response, next: NextF
         .input("startTime", sql.VarChar, group.startTime)
         .input("endTime", sql.VarChar, group.endTime)
         .input("note", sql.NVarChar, note || null)
+        .input("sessionType", sql.NVarChar, sessionType || null)
         .input("groupLabel", sql.NVarChar, group.groupLabel!.trim())
         .input("createdBy", sql.Int, req.user!.userId)
         .query<{ ScheduleId: number }>(`
-          INSERT INTO Schedule (SemesterId, ClassId, SubjectId, RoomId, ScheduleDate, StartTime, EndTime, Note, GroupLabel, CreatedBy)
+          INSERT INTO Schedule (SemesterId, ClassId, SubjectId, RoomId, ScheduleDate, StartTime, EndTime, Note, SessionType, GroupLabel, CreatedBy)
           OUTPUT INSERTED.ScheduleId
-          VALUES (@semesterId, @classId, @subjectId, @roomId, @scheduleDate, @startTime, @endTime, @note, @groupLabel, @createdBy)
+          VALUES (@semesterId, @classId, @subjectId, @roomId, @scheduleDate, @startTime, @endTime, @note, @sessionType, @groupLabel, @createdBy)
         `);
       const scheduleId = result.recordset[0].ScheduleId;
       scheduleIds.push(scheduleId);

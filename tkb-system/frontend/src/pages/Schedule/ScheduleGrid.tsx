@@ -79,23 +79,54 @@ const CAPACITY_POLICY_BY_ROOM_TYPE: Record<string, string> = {
   LamSang: "MaxStudentsPerClinicalGroup",
 };
 
-// Việc AW: ô chọn "Loại buổi học" tường minh thay vì bắt Admin phải đoán qua tên Phòng — dropdown
-// Phòng chỉ hiện đúng các phòng thuộc nhóm RoomType tương ứng loại buổi đã chọn. Gộp SanBai vào
-// nhóm Lý thuyết và Labo vào nhóm Thực hành, đồng bộ với classifyRoomCategory ở backend.
-const SESSION_TYPE_OPTIONS: { value: string; label: string }[] = [
-  { value: "LyThuyet", label: "Lý thuyết" },
-  { value: "ThucHanh", label: "Thực hành" },
-  { value: "LamSang", label: "Lâm sàng" },
-];
-const ROOM_TYPES_BY_SESSION_TYPE: Record<string, string[]> = {
+// Việc AW: ô chọn "Loại buổi học" tường minh thay vì bắt Admin phải đoán qua tên Phòng.
+// Việc BA: giá trị lưu trong form.sessionType nay là "Theory"/"Practice" (khớp thẳng
+// Schedule.SessionType gửi lên backend) thay vì NHÓM loại phòng như trước — vì 1 buổi Thực hành
+// có thể dạy tại phòng Lý thuyết (môn có PracticeMode=LyThuyet), lúc đó "loại phòng" và
+// "SessionType" không còn là 1. roomCategoryFor() suy ra nhóm RoomType cần lọc dựa trên CẢ 2:
+// PracticeMode của môn đang chọn + SessionType người dùng chọn.
+const ROOM_TYPES_BY_CATEGORY: Record<string, string[]> = {
   LyThuyet: ["LyThuyet", "SanBai"],
   ThucHanh: ["ThucHanh", "Labo"],
   LamSang: ["LamSang"],
 };
-function sessionTypeForRoomType(roomType: string): string {
-  if (roomType === "LyThuyet" || roomType === "SanBai") return "LyThuyet";
-  if (roomType === "ThucHanh" || roomType === "Labo") return "ThucHanh";
-  if (roomType === "LamSang") return "LamSang";
+
+function roomCategoryFor(practiceMode: string | null, sessionType: string): string {
+  if (sessionType === "Theory") return "LyThuyet";
+  if (sessionType === "Practice") {
+    if (practiceMode === "LyThuyet") return "LyThuyet";
+    if (practiceMode === "LamSang") return "LamSang";
+    return "ThucHanh";
+  }
+  return "";
+}
+
+// Nhãn lựa chọn "Loại buổi học" phụ thuộc Hình thức dạy Thực hành (PracticeMode) của môn đang
+// chọn — cùng 2 lựa chọn Lý thuyết/Thực hành nhưng nhãn (và nhóm phòng cho phép) khác nhau.
+function sessionTypeOptionsForPracticeMode(practiceMode: string | null): { value: string; label: string }[] {
+  if (practiceMode === "LyThuyet") {
+    return [
+      { value: "Theory", label: "Lý thuyết" },
+      { value: "Practice", label: "Thực hành (dạy tại phòng Lý thuyết)" },
+    ];
+  }
+  if (practiceMode === "LamSang") {
+    return [
+      { value: "Theory", label: "Lý thuyết" },
+      { value: "Practice", label: "Lâm sàng" },
+    ];
+  }
+  return [
+    { value: "Theory", label: "Lý thuyết" },
+    { value: "Practice", label: "Thực hành" },
+  ];
+}
+
+// Sửa buổi xếp từ trước khi có cột Schedule.SessionType (NULL) — suy luận tạm theo RoomType,
+// đồng bộ với fallback ở backend (policyRules.ts).
+function inferSessionTypeFromRoomType(roomType: string): string {
+  if (roomType === "LyThuyet" || roomType === "SanBai") return "Theory";
+  if (roomType === "ThucHanh" || roomType === "Labo" || roomType === "LamSang") return "Practice";
   return "";
 }
 
@@ -140,12 +171,20 @@ function fmtDDMMYYYY(d: Date): string {
 // Việc AT: dropdown chọn môn chỉ hiện đúng những môn đã khai báo trong Khung chương trình
 // (CurriculumItems) cho đúng Ngành + đúng Kỳ của Lớp/Đợt học đang chọn — không hiện môn của
 // Kỳ khác dù cùng Ngành. Thiếu majorId hoặc termNumber thì coi như chưa lọc được gì.
-async function loadCurriculumSubjectIds(majorId?: number, termNumber?: number | null, cohortId?: number | null): Promise<Set<number>> {
-  if (!majorId || !termNumber) return new Set();
+// Việc BA: đổi từ Set<number> sang Map<number,string> (SubjectId -> PracticeMode) — cần biết
+// Hình thức dạy Thực hành của môn đang chọn để quyết định nhãn/nhóm phòng ở "Loại buổi học"
+// (.has() vẫn dùng được y hệt Set cho các chỗ chỉ cần kiểm tra môn có thuộc khung chương trình).
+async function loadCurriculumSubjectInfo(majorId?: number, termNumber?: number | null, cohortId?: number | null): Promise<Map<number, string>> {
+  if (!majorId || !termNumber) return new Map();
   const params: Record<string, string> = { majorId: String(majorId), termNumber: String(termNumber) };
   if (cohortId) params.cohortId = String(cohortId);
   const res = await axiosClient.get<CurriculumItem[]>("/curriculum-items", { params });
-  return new Set(res.data.map((ci) => ci.SubjectId));
+  return new Map(res.data.map((ci) => [ci.SubjectId, ci.PracticeMode]));
+}
+
+function practiceModeForSubject(info: Map<number, string> | null, subjectId: string): string | null {
+  if (!info || !subjectId) return null;
+  return info.get(Number(subjectId)) ?? null;
 }
 
 function trainingModeLabel(mode: "CQ" | "LT" | null): string {
@@ -334,40 +373,59 @@ export default function ScheduleGrid() {
   // Việc AT: dropdown chọn môn chỉ hiện đúng những môn đã khai báo trong Khung chương trình
   // (CurriculumItems) cho đúng Ngành CỦA LỚP + đúng Kỳ CỦA ĐỢT HỌC đang chọn — chặt hơn Việc AR
   // (vốn chỉ lọc theo Ngành, không phân biệt Kỳ). Chưa đủ Lớp + Kỳ thì coi như chưa có môn nào.
-  const [formCurriculumSubjectIds, setFormCurriculumSubjectIds] = useState<Set<number> | null>(null);
-  const [mergeCurriculumSubjectIds, setMergeCurriculumSubjectIds] = useState<Set<number> | null>(null);
-  const [groupCurriculumSubjectIds, setGroupCurriculumSubjectIds] = useState<Set<number> | null>(null);
+  const [formCurriculumSubjectInfo, setFormCurriculumSubjectInfo] = useState<Map<number, string> | null>(null);
+  const [mergeCurriculumSubjectInfo, setMergeCurriculumSubjectInfo] = useState<Map<number, string> | null>(null);
+  const [groupCurriculumSubjectInfo, setGroupCurriculumSubjectInfo] = useState<Map<number, string> | null>(null);
+  // Việc BA: khi Sửa 1 buổi đã xếp, PracticeMode của môn được nạp riêng (không dùng chung
+  // formCurriculumSubjectInfo, vốn phụ thuộc form.semesterId — bị bỏ trống lúc Sửa) để tránh bị
+  // effect bên dưới ghi đè lại thành null ngay sau khi mở form Sửa.
+  const [editSubjectPracticeMode, setEditSubjectPracticeMode] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!selectedFormClass || !selectedFormSemester) { setFormCurriculumSubjectIds(null); return; }
-    loadCurriculumSubjectIds(selectedFormClass.MajorId, selectedFormSemester.TermNumber, selectedFormClass.CohortId)
-      .then(setFormCurriculumSubjectIds);
+    if (!selectedFormClass || !selectedFormSemester) { setFormCurriculumSubjectInfo(null); return; }
+    loadCurriculumSubjectInfo(selectedFormClass.MajorId, selectedFormSemester.TermNumber, selectedFormClass.CohortId)
+      .then(setFormCurriculumSubjectInfo);
   }, [selectedFormClass?.MajorId, selectedFormClass?.CohortId, selectedFormSemester?.TermNumber]);
 
   useEffect(() => {
     const first = selectedMergeClasses[0] || null;
-    if (!first || !selectedMergeSemester) { setMergeCurriculumSubjectIds(null); return; }
-    loadCurriculumSubjectIds(first.MajorId, selectedMergeSemester.TermNumber, first.CohortId)
-      .then(setMergeCurriculumSubjectIds);
+    if (!first || !selectedMergeSemester) { setMergeCurriculumSubjectInfo(null); return; }
+    loadCurriculumSubjectInfo(first.MajorId, selectedMergeSemester.TermNumber, first.CohortId)
+      .then(setMergeCurriculumSubjectInfo);
   }, [selectedMergeClasses[0]?.MajorId, selectedMergeClasses[0]?.CohortId, selectedMergeSemester?.TermNumber]);
 
   useEffect(() => {
-    if (!selectedGroupClass || !selectedGroupSemester) { setGroupCurriculumSubjectIds(null); return; }
-    loadCurriculumSubjectIds(selectedGroupClass.MajorId, selectedGroupSemester.TermNumber, selectedGroupClass.CohortId)
-      .then(setGroupCurriculumSubjectIds);
+    if (!selectedGroupClass || !selectedGroupSemester) { setGroupCurriculumSubjectInfo(null); return; }
+    loadCurriculumSubjectInfo(selectedGroupClass.MajorId, selectedGroupSemester.TermNumber, selectedGroupClass.CohortId)
+      .then(setGroupCurriculumSubjectInfo);
   }, [selectedGroupClass?.MajorId, selectedGroupClass?.CohortId, selectedGroupSemester?.TermNumber]);
 
   const formSubjects = useMemo(
-    () => (formCurriculumSubjectIds ? subjects.filter((s) => formCurriculumSubjectIds.has(s.SubjectId)) : []),
-    [subjects, formCurriculumSubjectIds]
+    () => (formCurriculumSubjectInfo ? subjects.filter((s) => formCurriculumSubjectInfo.has(s.SubjectId)) : []),
+    [subjects, formCurriculumSubjectInfo]
   );
   const mergeSubjects = useMemo(
-    () => (mergeCurriculumSubjectIds ? subjects.filter((s) => mergeCurriculumSubjectIds.has(s.SubjectId)) : []),
-    [subjects, mergeCurriculumSubjectIds]
+    () => (mergeCurriculumSubjectInfo ? subjects.filter((s) => mergeCurriculumSubjectInfo.has(s.SubjectId)) : []),
+    [subjects, mergeCurriculumSubjectInfo]
   );
   const groupSubjects = useMemo(
-    () => (groupCurriculumSubjectIds ? subjects.filter((s) => groupCurriculumSubjectIds.has(s.SubjectId)) : []),
-    [subjects, groupCurriculumSubjectIds]
+    () => (groupCurriculumSubjectInfo ? subjects.filter((s) => groupCurriculumSubjectInfo.has(s.SubjectId)) : []),
+    [subjects, groupCurriculumSubjectInfo]
+  );
+
+  // Việc BA: PracticeMode của môn đang chọn — quyết định nhãn "Loại buổi học" và nhóm phòng được
+  // phép chọn (roomCategoryFor). Ở form thường, ưu tiên editSubjectPracticeMode khi đang Sửa.
+  const formPracticeMode = useMemo(
+    () => (editingScheduleId ? editSubjectPracticeMode : practiceModeForSubject(formCurriculumSubjectInfo, form.subjectId)),
+    [editingScheduleId, editSubjectPracticeMode, formCurriculumSubjectInfo, form.subjectId]
+  );
+  const mergePracticeMode = useMemo(
+    () => practiceModeForSubject(mergeCurriculumSubjectInfo, mergeForm.subjectId),
+    [mergeCurriculumSubjectInfo, mergeForm.subjectId]
+  );
+  const groupPracticeMode = useMemo(
+    () => practiceModeForSubject(groupCurriculumSubjectInfo, groupForm.subjectId),
+    [groupCurriculumSubjectInfo, groupForm.subjectId]
   );
 
   // Việc AS: tính EndTime theo Số tiết thực tế thay vì lấp đầy cả Ca — mỗi form tra Phòng/Ca
@@ -398,18 +456,20 @@ export default function ScheduleGrid() {
     [groupForm.groups, rooms, sessions, policies]
   );
 
-  // Việc AW: dropdown Phòng chỉ hiện phòng thuộc đúng nhóm RoomType của Loại buổi học đã chọn.
+  // Việc AW/BA: dropdown Phòng chỉ hiện phòng thuộc đúng nhóm RoomType tương ứng — nhóm này nay
+  // phụ thuộc CẢ PracticeMode của môn lẫn SessionType đã chọn (roomCategoryFor), không chỉ suy
+  // thẳng từ SessionType như trước.
   const formRoomsForType = useMemo(
-    () => rooms.filter((r) => ROOM_TYPES_BY_SESSION_TYPE[form.sessionType]?.includes(r.RoomType)),
-    [rooms, form.sessionType]
+    () => rooms.filter((r) => ROOM_TYPES_BY_CATEGORY[roomCategoryFor(formPracticeMode, form.sessionType)]?.includes(r.RoomType)),
+    [rooms, formPracticeMode, form.sessionType]
   );
   const mergeRoomsForType = useMemo(
-    () => rooms.filter((r) => ROOM_TYPES_BY_SESSION_TYPE[mergeForm.sessionType]?.includes(r.RoomType)),
-    [rooms, mergeForm.sessionType]
+    () => rooms.filter((r) => ROOM_TYPES_BY_CATEGORY[roomCategoryFor(mergePracticeMode, mergeForm.sessionType)]?.includes(r.RoomType)),
+    [rooms, mergePracticeMode, mergeForm.sessionType]
   );
   const groupRoomsForType = useMemo(
-    () => rooms.filter((r) => ROOM_TYPES_BY_SESSION_TYPE[groupForm.sessionType]?.includes(r.RoomType)),
-    [rooms, groupForm.sessionType]
+    () => rooms.filter((r) => ROOM_TYPES_BY_CATEGORY[roomCategoryFor(groupPracticeMode, groupForm.sessionType)]?.includes(r.RoomType)),
+    [rooms, groupPracticeMode, groupForm.sessionType]
   );
 
   // Gợi ý tách nhóm: sĩ số lớp vượt giới hạn/ca của loại phòng đang chọn ở form xếp lịch thường.
@@ -633,6 +693,7 @@ export default function ScheduleGrid() {
       endTime: formEndTimeResult.endTime,
       note: form.note,
       isMakeup: form.isMakeup,
+      sessionType: form.sessionType,
     };
     try {
       const res = editingScheduleId
@@ -654,6 +715,7 @@ export default function ScheduleGrid() {
   function handleCancelEdit() {
     setEditingScheduleId(null);
     setEditProgress(null);
+    setEditSubjectPracticeMode(null);
     setForm(emptyForm);
     setShowForm(false);
     setError("");
@@ -665,6 +727,7 @@ export default function ScheduleGrid() {
     if (!editingScheduleId) return;
     setEditingScheduleId(null);
     setEditProgress(null);
+    setEditSubjectPracticeMode(null);
     setForm(emptyForm);
   }
 
@@ -679,11 +742,13 @@ export default function ScheduleGrid() {
     const session = sessions.find((s) => detail.StartTime >= s.StartTime && detail.StartTime < s.EndTime) || null;
     const periodMinutes = periodMinutesForRoomType(detail.RoomType, policies);
     const periods = Math.round(diffMinutesBetweenTimes(detail.StartTime, detail.EndTime) / periodMinutes);
+    const curriculumInfo = await loadCurriculumSubjectInfo(detail.MajorId, detail.TermNumber, detail.CohortId);
+    setEditSubjectPracticeMode(curriculumInfo.get(detail.SubjectId) ?? "ThucHanh");
     setForm({
       semesterId: "",
       classId: String(detail.ClassId),
       subjectId: String(detail.SubjectId),
-      sessionType: sessionTypeForRoomType(detail.RoomType),
+      sessionType: detail.SessionType || inferSessionTypeFromRoomType(detail.RoomType),
       roomId: String(detail.RoomId),
       teacherIds: detail.teacherIds.map(String),
       scheduleDate: detail.ScheduleDate.slice(0, 10),
@@ -737,6 +802,7 @@ export default function ScheduleGrid() {
       endTime: mergeEndTimeResult.endTime,
       note: mergeForm.note,
       isMakeup: mergeForm.isMakeup,
+      sessionType: mergeForm.sessionType,
     };
     try {
       const res = await axiosClient.post<{ warning?: string }>("/schedule/merged", payload);
@@ -825,6 +891,7 @@ export default function ScheduleGrid() {
       subjectId: Number(groupForm.subjectId),
       note: groupForm.note,
       isMakeup: groupForm.isMakeup,
+      sessionType: groupForm.sessionType,
       groups: groupsPayload,
     };
     try {
@@ -1039,9 +1106,9 @@ export default function ScheduleGrid() {
                 <option value="">{form.classId ? "Đợt học" : "-- Chọn lớp trước --"}</option>
                 {formSemesters.map((s) => <option key={s.SemesterId} value={s.SemesterId}>{s.SemesterName}</option>)}
               </select>
-              <select value={form.subjectId} onChange={(e) => setForm({ ...form, subjectId: e.target.value })}
-                required disabled={!formCurriculumSubjectIds}>
-                <option value="">{formCurriculumSubjectIds ? "Môn học" : "-- Chọn Lớp và Kỳ trước --"}</option>
+              <select value={form.subjectId} onChange={(e) => setForm({ ...form, subjectId: e.target.value, sessionType: "", roomId: "" })}
+                required disabled={!formCurriculumSubjectInfo}>
+                <option value="">{formCurriculumSubjectInfo ? "Môn học" : "-- Chọn Lớp và Kỳ trước --"}</option>
                 {formSubjects.map((s) => <option key={s.SubjectId} value={s.SubjectId}>{subjectLabel(s)}</option>)}
               </select>
             </div>
@@ -1049,7 +1116,7 @@ export default function ScheduleGrid() {
           <div className="form-grid">
             <select value={form.sessionType} onChange={(e) => setForm({ ...form, sessionType: e.target.value, roomId: "" })} required>
               <option value="">Loại buổi học</option>
-              {SESSION_TYPE_OPTIONS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+              {sessionTypeOptionsForPracticeMode(formPracticeMode).map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
             </select>
             <div>
               <select value={form.roomId} onChange={(e) => setForm({ ...form, roomId: e.target.value })}
@@ -1134,14 +1201,14 @@ export default function ScheduleGrid() {
                 <div className="hint mt-1">Danh sách Đợt học lấy theo lớp đầu tiên đã chọn — các lớp ghép chung phải cùng Đợt học.</div>
               )}
             </div>
-            <select value={mergeForm.subjectId} onChange={(e) => setMergeForm({ ...mergeForm, subjectId: e.target.value })}
-              required disabled={!mergeCurriculumSubjectIds}>
-              <option value="">{mergeCurriculumSubjectIds ? "Môn học" : "-- Chọn Lớp và Kỳ trước --"}</option>
+            <select value={mergeForm.subjectId} onChange={(e) => setMergeForm({ ...mergeForm, subjectId: e.target.value, sessionType: "", roomId: "" })}
+              required disabled={!mergeCurriculumSubjectInfo}>
+              <option value="">{mergeCurriculumSubjectInfo ? "Môn học" : "-- Chọn Lớp và Kỳ trước --"}</option>
               {mergeSubjects.map((s) => <option key={s.SubjectId} value={s.SubjectId}>{subjectLabel(s)}</option>)}
             </select>
             <select value={mergeForm.sessionType} onChange={(e) => setMergeForm({ ...mergeForm, sessionType: e.target.value, roomId: "" })} required>
               <option value="">Loại buổi học</option>
-              {SESSION_TYPE_OPTIONS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+              {sessionTypeOptionsForPracticeMode(mergePracticeMode).map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
             </select>
             <select value={mergeForm.roomId} onChange={(e) => setMergeForm({ ...mergeForm, roomId: e.target.value })}
               required disabled={!mergeForm.sessionType}>
@@ -1207,9 +1274,12 @@ export default function ScheduleGrid() {
               <option value="">{groupForm.classId ? "Đợt học" : "-- Chọn lớp trước --"}</option>
               {groupSemesters.map((s) => <option key={s.SemesterId} value={s.SemesterId}>{s.SemesterName}</option>)}
             </select>
-            <select value={groupForm.subjectId} onChange={(e) => setGroupForm({ ...groupForm, subjectId: e.target.value })}
-              required disabled={!groupCurriculumSubjectIds}>
-              <option value="">{groupCurriculumSubjectIds ? "Môn học" : "-- Chọn Lớp và Kỳ trước --"}</option>
+            <select value={groupForm.subjectId} onChange={(e) => setGroupForm({
+              ...groupForm, subjectId: e.target.value, sessionType: "",
+              groups: groupForm.groups.map((g) => ({ ...g, roomId: "" })),
+            })}
+              required disabled={!groupCurriculumSubjectInfo}>
+              <option value="">{groupCurriculumSubjectInfo ? "Môn học" : "-- Chọn Lớp và Kỳ trước --"}</option>
               {groupSubjects.map((s) => <option key={s.SubjectId} value={s.SubjectId}>{subjectLabel(s)}</option>)}
             </select>
             <select value={groupForm.sessionType} onChange={(e) => setGroupForm({
@@ -1217,7 +1287,7 @@ export default function ScheduleGrid() {
               groups: groupForm.groups.map((g) => ({ ...g, roomId: "" })),
             })} required>
               <option value="">Loại buổi học</option>
-              {SESSION_TYPE_OPTIONS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+              {sessionTypeOptionsForPracticeMode(groupPracticeMode).map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
             </select>
             <div>
               <input type="date" value={groupForm.scheduleDate}

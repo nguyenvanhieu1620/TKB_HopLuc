@@ -15,12 +15,38 @@ interface ItemForm {
   examHours: string;
   cohortId: string;
   sortOrder: string;
+  practiceMode: string;
 }
 
 const emptyForm: ItemForm = {
   subjectId: "", termNumber: "1", credits: "",
   totalHours: "", theoryHours: "", practiceHours: "", examHours: "", cohortId: "", sortOrder: "",
+  practiceMode: "ThucHanh",
 };
+
+// Việc BA: hình thức dạy phần Thực hành của môn — ảnh hưởng loại phòng được chọn và cách tính
+// tiến độ (Lý thuyết/Thực hành) khi xếp lịch (xem ScheduleGrid.tsx).
+const PRACTICE_MODE_OPTIONS: { value: string; label: string }[] = [
+  { value: "ThucHanh", label: "Học tại phòng Thực hành" },
+  { value: "LyThuyet", label: "Học như Lý thuyết (dạy tại phòng Lý thuyết)" },
+  { value: "LamSang", label: "Lâm sàng tại bệnh viện" },
+];
+
+const PRACTICE_MODE_LABEL: Record<string, string> = {
+  ThucHanh: "Thực hành",
+  LyThuyet: "Học như LT",
+  LamSang: "Lâm sàng",
+};
+
+function parsePracticeMode(raw: string): { value: string; error: boolean } {
+  const trimmed = raw.trim();
+  if (!trimmed) return { value: "ThucHanh", error: false };
+  const normalized = normalizeText(trimmed);
+  if (normalized === "thuc hanh") return { value: "ThucHanh", error: false };
+  if (normalized === "ly thuyet") return { value: "LyThuyet", error: false };
+  if (normalized === "lam sang") return { value: "LamSang", error: false };
+  return { value: "ThucHanh", error: true };
+}
 
 const ROMAN_VALUES: Record<string, number> = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };
 
@@ -54,6 +80,7 @@ interface ExcelCurriculumRow {
   "Giờ thực hành"?: string | number;
   "Giờ thi/kiểm tra"?: string | number;
   "Kỳ"?: string | number;
+  "Hình thức TH"?: string;
 }
 
 interface ImportRow {
@@ -70,6 +97,7 @@ interface ImportRow {
   examHours: number;
   termRaw: string;
   termNumber: number | null;
+  practiceMode: string;
   error: string | null;
   selected: boolean;
   duplicateOf: Subject | null;
@@ -91,12 +119,15 @@ function parseSheetRows(sheetName: string, raws: ExcelCurriculumRow[], majors: M
     const examHours = Number(raw["Giờ thi/kiểm tra"]) || 0;
     const termRaw = String(raw["Kỳ"] ?? "").trim();
     const termNumber = parseTermNumber(termRaw);
+    const practiceModeRaw = String(raw["Hình thức TH"] ?? "").trim();
+    const practiceModeParsed = parsePracticeMode(practiceModeRaw);
 
     let error: string | null = null;
     if (!major) error = `Không tìm thấy ngành "${sheetName}"`;
     else if (!subjectCode) error = "Thiếu mã mô-đun";
     else if (!subjectName) error = "Thiếu tên mô-đun";
     else if (!termNumber) error = `Không đọc được kỳ học "${termRaw}"`;
+    else if (practiceModeParsed.error) error = `Không đọc được "Hình thức TH" là "${practiceModeRaw}"`;
 
     const duplicateOf = subjectName
       ? existingSubjects.find((s) => normalizeText(s.SubjectName) === normalizeText(subjectName)) || null
@@ -107,7 +138,7 @@ function parseSheetRows(sheetName: string, raws: ExcelCurriculumRow[], majors: M
       key: `${sheetName}__${rowNum}`, sheetName, rowNum,
       majorId: major?.MajorId ?? null,
       subjectCode, subjectName, credits, totalHours, theoryHours, practiceHours, examHours,
-      termRaw, termNumber, error, selected: !error,
+      termRaw, termNumber, practiceMode: practiceModeParsed.value, error, selected: !error,
       duplicateOf, resolution: "use-existing", newName,
     };
   });
@@ -212,6 +243,7 @@ export default function CurriculumItems() {
           examHours: form.examHours ? Number(form.examHours) : undefined,
           cohortId: form.cohortId ? Number(form.cohortId) : undefined,
           sortOrder: form.sortOrder ? Number(form.sortOrder) : 0,
+          practiceMode: form.practiceMode,
           isActive: true,
         });
       } else {
@@ -226,6 +258,7 @@ export default function CurriculumItems() {
           examHours: form.examHours ? Number(form.examHours) : undefined,
           cohortId: form.cohortId ? Number(form.cohortId) : undefined,
           sortOrder: form.sortOrder ? Number(form.sortOrder) : undefined,
+          practiceMode: form.practiceMode,
         });
       }
       resetForm();
@@ -248,6 +281,7 @@ export default function CurriculumItems() {
       examHours: item.ExamHours != null ? String(item.ExamHours) : "",
       cohortId: item.CohortId != null ? String(item.CohortId) : "",
       sortOrder: String(item.SortOrder),
+      practiceMode: item.PracticeMode || "ThucHanh",
     });
   }
 
@@ -270,6 +304,7 @@ export default function CurriculumItems() {
         "Giờ thực hành": 15,
         "Giờ thi/kiểm tra": 2,
         "Kỳ": "II",
+        "Hình thức TH": "Thực hành",
       }],
     })));
     downloadWorkbook(wb, "Mau_Import_KhungChuongTrinh.xlsx");
@@ -329,6 +364,7 @@ export default function CurriculumItems() {
           practiceHours: r.practiceHours,
           examHours: r.examHours,
           termNumber: r.termNumber,
+          practiceMode: r.practiceMode,
         })),
       });
       setImportResult(res.data);
@@ -421,7 +457,7 @@ export default function CurriculumItems() {
                     <thead>
                       <tr>
                         <th></th><th>Dòng</th><th>Mã MĐ</th><th>Tên mô-đun</th><th>Tín chỉ</th>
-                        <th>Tổng giờ</th><th>LT</th><th>TH</th><th>Thi</th><th>Kỳ</th>
+                        <th>Tổng giờ</th><th>LT</th><th>TH</th><th>Thi</th><th>Kỳ</th><th>Hình thức TH</th>
                         <th>Trùng tên?</th><th>Trạng thái</th>
                       </tr>
                     </thead>
@@ -441,6 +477,7 @@ export default function CurriculumItems() {
                           <td>{r.practiceHours}</td>
                           <td>{r.examHours}</td>
                           <td>{r.termRaw}</td>
+                          <td>{PRACTICE_MODE_LABEL[r.practiceMode] || r.practiceMode}</td>
                           <td>
                             {r.duplicateOf ? (
                               <div className="text-[13px]">
@@ -532,6 +569,9 @@ export default function CurriculumItems() {
             onChange={(e) => setForm({ ...form, practiceHours: e.target.value })} />
           <input type="number" placeholder="Giờ thi/kiểm tra (ghi đè, để trống = mặc định)" value={form.examHours}
             onChange={(e) => setForm({ ...form, examHours: e.target.value })} />
+          <select value={form.practiceMode} onChange={(e) => setForm({ ...form, practiceMode: e.target.value })}>
+            {PRACTICE_MODE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
           <select value={form.cohortId} onChange={(e) => setForm({ ...form, cohortId: e.target.value })}>
             <option value="">-- Tất cả các khóa --</option>
             {cohorts.map((c) => <option key={c.CohortId} value={c.CohortId}>{c.CohortName}</option>)}
@@ -568,7 +608,7 @@ export default function CurriculumItems() {
                 <thead>
                   <tr>
                     <th>#</th><th>Môn học</th><th>Mã môn</th><th>Khóa</th><th>Tín chỉ</th>
-                    <th>Tổng giờ</th><th>LT</th><th>TH</th><th>Thi</th><th></th>
+                    <th>Tổng giờ</th><th>LT</th><th>TH</th><th>Thi</th><th>Hình thức TH</th><th></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -583,6 +623,7 @@ export default function CurriculumItems() {
                       <td>{it.TheoryHours}</td>
                       <td>{it.PracticeHours}</td>
                       <td>{it.ExamHours}</td>
+                      <td>{PRACTICE_MODE_LABEL[it.PracticeMode] || it.PracticeMode}</td>
                       <td>
                         <button onClick={() => handleEdit(it)}>Sửa</button>
                         <button onClick={() => handleDelete(it.CurriculumItemId)}>Xóa</button>
@@ -601,6 +642,7 @@ export default function CurriculumItems() {
                     <td>{totals.theoryHours}</td>
                     <td>{totals.practiceHours}</td>
                     <td>{totals.examHours}</td>
+                    <td></td>
                     <td></td>
                   </tr>
                 </tfoot>

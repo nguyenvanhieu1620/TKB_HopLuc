@@ -103,12 +103,17 @@ CREATE TABLE CurriculumItems (
     TheoryHours      INT NULL,
     PracticeHours    INT NULL,
     ExamHours        INT NULL,
+    -- Việc BA: hình thức dạy phần Thực hành của môn này — LyThuyet (dạy tại phòng Lý thuyết,
+    -- 45p/tiết, nhưng vẫn tính vào chỉ tiêu giờ Thực hành), ThucHanh (mặc định, phòng Thực
+    -- hành/Labo, 60p/tiết), LamSang (phòng Lâm sàng, 60p/tiết).
+    PracticeMode     NVARCHAR(10) NOT NULL DEFAULT 'ThucHanh',
     SortOrder        INT NOT NULL DEFAULT 0,
     IsActive         BIT NOT NULL DEFAULT 1,
     CONSTRAINT FK_CurriculumItems_Major   FOREIGN KEY (MajorId)   REFERENCES Majors(MajorId),
     CONSTRAINT FK_CurriculumItems_Subject FOREIGN KEY (SubjectId) REFERENCES Subjects(SubjectId),
     CONSTRAINT FK_CurriculumItems_Cohort  FOREIGN KEY (CohortId)  REFERENCES Cohorts(CohortId),
-    CONSTRAINT UQ_CurriculumItems UNIQUE (MajorId, SubjectId, CohortId)
+    CONSTRAINT UQ_CurriculumItems UNIQUE (MajorId, SubjectId, CohortId),
+    CONSTRAINT CK_CurriculumItems_PracticeMode CHECK (PracticeMode IN ('LyThuyet', 'ThucHanh', 'LamSang'))
 );
 GO
 
@@ -365,6 +370,10 @@ CREATE TABLE Schedule (
     EndTime          TIME(0)         NOT NULL,
     GroupLabel       NVARCHAR(30)    NULL,   -- nhãn nhóm tách lớp (vd 'Nhóm 1', 'Tổ TH-A')
     MergedSessionId  INT             NULL,   -- khác NULL nếu buổi học này thuộc 1 lần ghép lớp
+    -- Việc BA: 'Theory'/'Practice' — đánh dấu tường minh buổi này tính vào chỉ tiêu Lý thuyết hay
+    -- Thực hành của môn, vì PracticeMode=LyThuyet khiến 1 buổi Thực hành vẫn dùng phòng Lý thuyết
+    -- (RoomType không còn đủ để suy luận đúng). NULL = dữ liệu cũ, fallback suy theo RoomType.
+    SessionType      NVARCHAR(10)    NULL,
     Note             NVARCHAR(500)   NULL,
     CreatedBy        INT             NULL,
     CreatedAt        DATETIME2       NOT NULL DEFAULT SYSDATETIME(),

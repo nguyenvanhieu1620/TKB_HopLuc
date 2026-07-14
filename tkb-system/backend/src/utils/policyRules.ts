@@ -280,14 +280,22 @@ export interface PeriodTimelineEntry {
 // Thực hành được tính TÁCH BIỆT theo loại phòng của từng buổi (classifyRoomCategory) — 1 buổi chỉ
 // cộng vào ĐÚNG 1 trong 2 dòng lũy kế, không cộng chung như bản trước (gây lỗi báo nhầm đủ điều
 // kiện thi dù mới xếp toàn Lý thuyết, chưa xếp Thực hành nào).
+// Việc BA: 1 buổi Thực hành có thể được dạy TẠI phòng Lý thuyết (PracticeMode=LyThuyet của môn) —
+// lúc này classifyRoomCategory(RoomType) sẽ suy nhầm ra "LyThuyet" dù buổi đó phải tính vào chỉ
+// tiêu Thực hành. Vì vậy phải ƯU TIÊN Schedule.SessionType ("Theory"/"Practice", do người dùng chọn
+// tường minh ở "Loại buổi học" khi xếp lịch) để xác định LOẠI buổi (chỉ tiêu nào được cộng), chỉ
+// fallback về suy luận theo RoomType (như cũ) khi SessionType còn NULL (dữ liệu xếp từ trước khi có
+// cột này). ĐỘ DÀI phút/tiết thì vẫn luôn tính theo RoomType thật của phòng (1 tiết tại phòng Lý
+// thuyết luôn là 45 phút bất kể buổi đó phục vụ mục đích Lý thuyết hay Thực hành) — SessionType chỉ
+// quyết định buổi cộng vào chỉ tiêu nào, không đổi độ dài vật lý của 1 tiết trong phòng đó.
 export async function getPeriodTimelineForSubject(classId: number, subjectId: number): Promise<PeriodTimelineEntry[]> {
   const pool = await getPool();
   const rowsResult = await pool
     .request()
     .input("classId", sql.Int, classId)
     .input("subjectId", sql.Int, subjectId)
-    .query<{ ScheduleId: number; RoomType: string; StartTime: string; EndTime: string }>(`
-      SELECT s.ScheduleId, r.RoomType, CONVERT(VARCHAR(5), s.StartTime, 108) AS StartTime, CONVERT(VARCHAR(5), s.EndTime, 108) AS EndTime
+    .query<{ ScheduleId: number; RoomType: string; SessionType: string | null; StartTime: string; EndTime: string }>(`
+      SELECT s.ScheduleId, r.RoomType, s.SessionType, CONVERT(VARCHAR(5), s.StartTime, 108) AS StartTime, CONVERT(VARCHAR(5), s.EndTime, 108) AS EndTime
       FROM Schedule s
       INNER JOIN Rooms r ON r.RoomId = s.RoomId
       WHERE s.ClassId = @classId AND s.SubjectId = @subjectId
@@ -295,17 +303,22 @@ export async function getPeriodTimelineForSubject(classId: number, subjectId: nu
     `);
 
   const periodMinutesCache = new Map<string, number>();
+
   let cumulativeTheory = 0;
   let cumulativePractice = 0;
   const timeline: PeriodTimelineEntry[] = [];
   for (const row of rowsResult.recordset) {
+    const category: SessionCategory | null =
+      row.SessionType === "Theory" ? "LyThuyet"
+      : row.SessionType === "Practice" ? "ThucHanh"
+      : classifyRoomCategory(row.RoomType);
+
     let periodMinutes = periodMinutesCache.get(row.RoomType);
     if (periodMinutes === undefined) {
       periodMinutes = await getPeriodMinutes(row.RoomType);
       periodMinutesCache.set(row.RoomType, periodMinutes);
     }
     const periods = diffMinutes(row.StartTime, row.EndTime) / periodMinutes;
-    const category = classifyRoomCategory(row.RoomType);
     if (category === "LyThuyet") cumulativeTheory += periods;
     else if (category === "ThucHanh") cumulativePractice += periods;
     timeline.push({

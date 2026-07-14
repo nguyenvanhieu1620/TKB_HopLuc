@@ -15,6 +15,7 @@ interface CurriculumItemBody {
   cohortId?: number;
   sortOrder?: number;
   isActive?: boolean;
+  practiceMode?: "LyThuyet" | "ThucHanh" | "LamSang";
 }
 
 interface BulkCurriculumRow {
@@ -28,6 +29,7 @@ interface BulkCurriculumRow {
   practiceHours?: number;
   examHours?: number;
   termNumber?: number;
+  practiceMode?: "LyThuyet" | "ThucHanh" | "LamSang";
 }
 
 export async function list(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
@@ -68,7 +70,7 @@ export async function list(req: AuthRequest, res: Response, next: NextFunction):
                COALESCE(ci.TheoryHours, sub.TheoryHours) AS TheoryHours,
                COALESCE(ci.PracticeHours, sub.PracticeHours) AS PracticeHours,
                COALESCE(ci.ExamHours, sub.ExamHours) AS ExamHours,
-               ci.SortOrder, ci.IsActive
+               ci.PracticeMode, ci.SortOrder, ci.IsActive
         FROM ranked ci
         INNER JOIN Majors m ON m.MajorId = ci.MajorId
         INNER JOIN Subjects sub ON sub.SubjectId = ci.SubjectId
@@ -87,7 +89,7 @@ export async function list(req: AuthRequest, res: Response, next: NextFunction):
              COALESCE(ci.TheoryHours, sub.TheoryHours) AS TheoryHours,
              COALESCE(ci.PracticeHours, sub.PracticeHours) AS PracticeHours,
              COALESCE(ci.ExamHours, sub.ExamHours) AS ExamHours,
-             ci.SortOrder, ci.IsActive
+             ci.PracticeMode, ci.SortOrder, ci.IsActive
       FROM CurriculumItems ci
       INNER JOIN Majors m ON m.MajorId = ci.MajorId
       INNER JOIN Subjects sub ON sub.SubjectId = ci.SubjectId
@@ -105,7 +107,7 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
   try {
     const {
       majorId, subjectId, termNumber, credits,
-      totalHours, theoryHours, practiceHours, examHours, cohortId, sortOrder,
+      totalHours, theoryHours, practiceHours, examHours, cohortId, sortOrder, practiceMode,
     } = req.body as CurriculumItemBody;
     if (!majorId || !subjectId || !termNumber) {
       res.status(400).json({ message: "Thiếu ngành, môn học hoặc kỳ học" });
@@ -124,11 +126,12 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
       .input("examHours", sql.Int, examHours ?? null)
       .input("cohortId", sql.Int, cohortId ?? null)
       .input("sortOrder", sql.Int, sortOrder ?? 0)
+      .input("practiceMode", sql.NVarChar, practiceMode || "ThucHanh")
       .query<{ CurriculumItemId: number }>(`
         INSERT INTO CurriculumItems
-          (MajorId, SubjectId, TermNumber, Credits, TotalHours, TheoryHours, PracticeHours, ExamHours, CohortId, SortOrder)
+          (MajorId, SubjectId, TermNumber, Credits, TotalHours, TheoryHours, PracticeHours, ExamHours, CohortId, SortOrder, PracticeMode)
         OUTPUT INSERTED.CurriculumItemId
-        VALUES (@majorId, @subjectId, @termNumber, @credits, @totalHours, @theoryHours, @practiceHours, @examHours, @cohortId, @sortOrder)
+        VALUES (@majorId, @subjectId, @termNumber, @credits, @totalHours, @theoryHours, @practiceHours, @examHours, @cohortId, @sortOrder, @practiceMode)
       `);
     res.status(201).json({ curriculumItemId: result.recordset[0].CurriculumItemId });
   } catch (err) {
@@ -148,7 +151,7 @@ export async function update(req: AuthRequest, res: Response, next: NextFunction
   try {
     const { id } = req.params;
     const {
-      termNumber, credits, totalHours, theoryHours, practiceHours, examHours, cohortId, sortOrder, isActive,
+      termNumber, credits, totalHours, theoryHours, practiceHours, examHours, cohortId, sortOrder, isActive, practiceMode,
     } = req.body as CurriculumItemBody;
     const pool = await getPool();
     await pool
@@ -163,10 +166,11 @@ export async function update(req: AuthRequest, res: Response, next: NextFunction
       .input("cohortId", sql.Int, cohortId ?? null)
       .input("sortOrder", sql.Int, sortOrder ?? 0)
       .input("isActive", sql.Bit, isActive ?? true)
+      .input("practiceMode", sql.NVarChar, practiceMode || "ThucHanh")
       .query(`
         UPDATE CurriculumItems SET TermNumber=@termNumber, Credits=@credits,
           TotalHours=@totalHours, TheoryHours=@theoryHours, PracticeHours=@practiceHours, ExamHours=@examHours,
-          CohortId=@cohortId, SortOrder=@sortOrder, IsActive=@isActive
+          CohortId=@cohortId, SortOrder=@sortOrder, IsActive=@isActive, PracticeMode=@practiceMode
         WHERE CurriculumItemId = @id
       `);
     res.json({ message: "Đã cập nhật" });
@@ -247,11 +251,12 @@ export async function bulkCreate(req: AuthRequest, res: Response, next: NextFunc
           .input("theoryHours", sql.Int, row.theoryHours ?? null)
           .input("practiceHours", sql.Int, row.practiceHours ?? null)
           .input("examHours", sql.Int, row.examHours ?? null)
+          .input("practiceMode", sql.NVarChar, row.practiceMode || "ThucHanh")
           .query(`
             INSERT INTO CurriculumItems
-              (MajorId, CohortId, SubjectId, TermNumber, Credits, TotalHours, TheoryHours, PracticeHours, ExamHours, SortOrder)
+              (MajorId, CohortId, SubjectId, TermNumber, Credits, TotalHours, TheoryHours, PracticeHours, ExamHours, SortOrder, PracticeMode)
             VALUES
-              (@majorId, @cohortId, @subjectId, @termNumber, @credits, @totalHours, @theoryHours, @practiceHours, @examHours, 0)
+              (@majorId, @cohortId, @subjectId, @termNumber, @credits, @totalHours, @theoryHours, @practiceHours, @examHours, 0, @practiceMode)
           `);
       });
 

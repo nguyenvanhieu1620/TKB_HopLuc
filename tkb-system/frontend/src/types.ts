@@ -83,6 +83,9 @@ export interface CurriculumItem {
   TheoryHours: number | null;
   PracticeHours: number | null;
   ExamHours: number | null;
+  // Việc BA: hình thức dạy phần Thực hành của môn — ThucHanh (mặc định, phòng thực hành/60p/tiết),
+  // LyThuyet (dạy tại phòng lý thuyết, 45p/tiết nhưng vẫn tính vào chỉ tiêu Thực hành), LamSang.
+  PracticeMode: "LyThuyet" | "ThucHanh" | "LamSang";
   SortOrder: number;
   IsActive: boolean;
 }
@@ -200,6 +203,11 @@ export interface ScheduleDetail {
   ScheduleId: number;
   ClassId: number;
   ClassName: string;
+  // Việc BA: cần để tra lại PracticeMode của môn (CurriculumItems) khi mở form Sửa, vì lúc đó
+  // form.semesterId bị bỏ trống nên không suy ra được TermNumber theo cách thông thường.
+  MajorId: number;
+  CohortId: number | null;
+  TermNumber: number | null;
   SubjectId: number;
   SubjectName: string;
   RoomId: number;
@@ -211,6 +219,9 @@ export interface ScheduleDetail {
   Note: string | null;
   MergedSessionId: number | null;
   GroupLabel: string | null;
+  // Việc BA: "Theory"/"Practice" do người dùng chọn tường minh khi xếp lịch; NULL cho dữ liệu xếp
+  // từ trước (khi mở form Sửa buổi cũ, cần tự suy luận lại từ RoomType).
+  SessionType: "Theory" | "Practice" | null;
   teacherIds: number[];
   theoryTarget: number;
   practiceTarget: number;
