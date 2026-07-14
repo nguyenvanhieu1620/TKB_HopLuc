@@ -10,6 +10,7 @@ interface ClassBody {
   classSize?: number;
   startDate?: string;
   isActive?: boolean;
+  schedulePatternOverride?: "CQ" | "LT" | null;
 }
 
 export async function list(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
@@ -17,6 +18,7 @@ export async function list(req: AuthRequest, res: Response, next: NextFunction):
     const pool = await getPool();
     const result = await pool.request().query(`
       SELECT c.ClassId, c.ClassName, c.MajorId, m.MajorName, m.TrainingMode,
+             c.SchedulePatternOverride,
              c.CohortId, co.CohortName, c.ClassSize, c.StartDate, c.IsActive
       FROM Classes c
       INNER JOIN Majors m ON m.MajorId = c.MajorId
@@ -31,7 +33,7 @@ export async function list(req: AuthRequest, res: Response, next: NextFunction):
 
 export async function create(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { className, majorId, cohortId, classSize, startDate } = req.body as ClassBody;
+    const { className, majorId, cohortId, classSize, startDate, schedulePatternOverride } = req.body as ClassBody;
     if (!className || !majorId || !cohortId) {
       res.status(400).json({ message: "Thiếu tên lớp, ngành hoặc khóa học" });
       return;
@@ -44,10 +46,11 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
       .input("cohortId", sql.Int, cohortId)
       .input("classSize", sql.Int, classSize || 0)
       .input("startDate", sql.Date, startDate || null)
+      .input("schedulePatternOverride", sql.NVarChar, schedulePatternOverride || null)
       .query<{ ClassId: number }>(`
-        INSERT INTO Classes (ClassName, MajorId, CohortId, ClassSize, StartDate)
+        INSERT INTO Classes (ClassName, MajorId, CohortId, ClassSize, StartDate, SchedulePatternOverride)
         OUTPUT INSERTED.ClassId
-        VALUES (@className, @majorId, @cohortId, @classSize, @startDate)
+        VALUES (@className, @majorId, @cohortId, @classSize, @startDate, @schedulePatternOverride)
       `);
     res.status(201).json({ classId: result.recordset[0].ClassId });
   } catch (err) {
@@ -58,7 +61,7 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
 export async function update(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   try {
     const { id } = req.params;
-    const { className, majorId, cohortId, classSize, startDate, isActive } = req.body as ClassBody;
+    const { className, majorId, cohortId, classSize, startDate, isActive, schedulePatternOverride } = req.body as ClassBody;
     const pool = await getPool();
     await pool
       .request()
@@ -69,9 +72,11 @@ export async function update(req: AuthRequest, res: Response, next: NextFunction
       .input("classSize", sql.Int, classSize || 0)
       .input("startDate", sql.Date, startDate || null)
       .input("isActive", sql.Bit, isActive ?? true)
+      .input("schedulePatternOverride", sql.NVarChar, schedulePatternOverride || null)
       .query(`
         UPDATE Classes SET ClassName=@className, MajorId=@majorId,
-          CohortId=@cohortId, ClassSize=@classSize, StartDate=@startDate, IsActive=@isActive
+          CohortId=@cohortId, ClassSize=@classSize, StartDate=@startDate, IsActive=@isActive,
+          SchedulePatternOverride=@schedulePatternOverride
         WHERE ClassId = @id
       `);
     res.json({ message: "Đã cập nhật" });

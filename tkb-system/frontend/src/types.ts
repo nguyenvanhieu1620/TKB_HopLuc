@@ -93,6 +93,9 @@ export interface SchoolClass {
   MajorId: number;
   MajorName: string;
   TrainingMode: "CQ" | "LT" | null;
+  // Việc AZ: ghi đè kiểu lịch học riêng cho lớp này (vd văn bằng 2) — CHỈ ảnh hưởng kiểm tra
+  // ngày/buổi khi xếp lịch, không đổi Hệ đào tạo thật (TrainingMode) của Ngành.
+  SchedulePatternOverride: "CQ" | "LT" | null;
   CohortId: number;
   CohortName: string;
   ClassSize: number;

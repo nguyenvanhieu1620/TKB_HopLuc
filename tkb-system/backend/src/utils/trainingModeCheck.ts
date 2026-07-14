@@ -34,19 +34,24 @@ interface TrainingModeCheckResult {
   trainingMode?: TrainingMode | null;
 }
 
+// Việc AZ: Classes.SchedulePatternOverride cho phép 1 Lớp xếp lịch theo KIỂU khác với Hệ đào tạo
+// thật của Ngành (vd lớp văn bằng 2 thuộc Ngành hệ CQ nhưng học viên đi làm, xếp lịch kiểu cuối
+// tuần+tối như LT) — CHỈ ảnh hưởng việc kiểm tra ngày/buổi ở đây, KHÔNG ảnh hưởng chương
+// trình/tín chỉ/số kỳ (generateTerms trong classController.ts vẫn dùng thẳng Majors.TrainingMode,
+// không qua hàm này). Ưu tiên override nếu có, fallback về Hệ thật của Ngành nếu NULL.
 export async function getClassTrainingMode(classId: number): Promise<{ trainingMode: TrainingMode | null; className: string } | null> {
   const pool = await getPool();
   const result = await pool
     .request()
     .input("classId", sql.Int, classId)
-    .query<{ TrainingMode: TrainingMode | null; ClassName: string }>(`
-      SELECT m.TrainingMode, c.ClassName
+    .query<{ TrainingMode: TrainingMode | null; SchedulePatternOverride: TrainingMode | null; ClassName: string }>(`
+      SELECT m.TrainingMode, c.SchedulePatternOverride, c.ClassName
       FROM Classes c INNER JOIN Majors m ON m.MajorId = c.MajorId
       WHERE c.ClassId = @classId
     `);
   const row = result.recordset[0];
   if (!row) return null;
-  return { trainingMode: row.TrainingMode, className: row.ClassName };
+  return { trainingMode: row.SchedulePatternOverride ?? row.TrainingMode, className: row.ClassName };
 }
 
 // Ràng buộc ngày/buổi theo hệ đào tạo:

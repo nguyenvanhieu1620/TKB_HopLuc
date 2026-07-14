@@ -125,11 +125,18 @@ CREATE TABLE Classes (
     CohortId      INT             NOT NULL,
     ClassSize     INT             NOT NULL DEFAULT 0,
     StartDate     DATE            NULL,   -- ngày khai giảng của lớp (trường tuyển sinh quanh năm, mỗi lớp 1 mốc riêng)
+    -- Việc AZ: ghi đè KIỂU LỊCH HỌC (ngày/buổi) riêng cho lớp này, khác với Hệ đào tạo thật của
+    -- Ngành (vd lớp văn bằng 2 thuộc Ngành hệ CQ nhưng học viên đi làm nên xếp lịch kiểu cuối
+    -- tuần+tối như LT) — CHỈ ảnh hưởng kiểm tra ngày/buổi khi xếp lịch, KHÔNG ảnh hưởng chương
+    -- trình/tín chỉ/số kỳ (những cái đó vẫn luôn theo đúng Majors.TrainingMode thật). NULL = dùng
+    -- đúng Hệ của Ngành như bình thường (đa số lớp).
+    SchedulePatternOverride NVARCHAR(10) NULL,
     IsActive      BIT             NOT NULL DEFAULT 1,
     CreatedAt     DATETIME2       NOT NULL DEFAULT SYSDATETIME(),
     CONSTRAINT FK_Classes_Majors  FOREIGN KEY (MajorId)  REFERENCES Majors(MajorId),
     CONSTRAINT FK_Classes_Cohorts FOREIGN KEY (CohortId) REFERENCES Cohorts(CohortId),
-    CONSTRAINT UQ_Classes_Name UNIQUE (ClassName)
+    CONSTRAINT UQ_Classes_Name UNIQUE (ClassName),
+    CONSTRAINT CK_Classes_SchedulePattern CHECK (SchedulePatternOverride IN ('CQ', 'LT') OR SchedulePatternOverride IS NULL)
 );
 GO
 

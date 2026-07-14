@@ -9,9 +9,18 @@ interface ClassForm {
   cohortId: string;
   classSize: string;
   startDate: string;
+  schedulePatternOverride: string;
 }
 
-const emptyForm: ClassForm = { className: "", majorId: "", cohortId: "", classSize: "", startDate: "" };
+const emptyForm: ClassForm = {
+  className: "", majorId: "", cohortId: "", classSize: "", startDate: "", schedulePatternOverride: "",
+};
+
+function trainingModeLabel(mode: "CQ" | "LT" | null): string {
+  if (mode === "CQ") return "Chính quy";
+  if (mode === "LT") return "Liên thông";
+  return "—";
+}
 
 export default function Classes() {
   const [items, setItems] = useState<SchoolClass[]>([]);
@@ -47,6 +56,7 @@ export default function Classes() {
       cohortId: Number(form.cohortId),
       classSize: Number(form.classSize) || 0,
       startDate: form.startDate || undefined,
+      schedulePatternOverride: form.schedulePatternOverride || null,
     };
     try {
       if (editingId) {
@@ -70,6 +80,7 @@ export default function Classes() {
       cohortId: String(item.CohortId),
       classSize: String(item.ClassSize),
       startDate: item.StartDate ? item.StartDate.slice(0, 10) : "",
+      schedulePatternOverride: item.SchedulePatternOverride || "",
     });
   }
 
@@ -114,6 +125,17 @@ export default function Classes() {
           <input type="date" value={form.startDate}
             onChange={(e) => setForm({ ...form, startDate: e.target.value })} />
         </div>
+        <div>
+          <select value={form.schedulePatternOverride}
+            onChange={(e) => setForm({ ...form, schedulePatternOverride: e.target.value })}>
+            <option value="">-- Kiểu lịch học: Theo Hệ đào tạo của Ngành (mặc định) --</option>
+            <option value="CQ">Ngày trong tuần, như hệ Chính quy</option>
+            <option value="LT">Cuối tuần + buổi tối, như hệ Liên thông</option>
+          </select>
+          <div className="hint mt-1">
+            Dùng cho trường hợp đặc biệt như văn bằng 2 — lớp vẫn tính chương trình/tín chỉ theo đúng Ngành, chỉ đổi cách xếp ngày/buổi học.
+          </div>
+        </div>
         <button type="submit">{editingId ? "Cập nhật" : "Thêm mới"}</button>
         {editingId && <button type="button" onClick={resetForm}>Hủy</button>}
       </form>
@@ -127,7 +149,14 @@ export default function Classes() {
               <td>{idx + 1}</td>
               <td>{it.ClassName}</td>
               <td>{it.MajorName}</td>
-              <td>{it.TrainingMode === "CQ" ? "Chính quy" : it.TrainingMode === "LT" ? "Liên thông" : "—"}</td>
+              <td>
+                {trainingModeLabel(it.TrainingMode)}
+                {it.SchedulePatternOverride && (
+                  <div className="text-[11px] text-amber-600">
+                    Lịch học ghi đè: {trainingModeLabel(it.SchedulePatternOverride)}
+                  </div>
+                )}
+              </td>
               <td>{it.CohortName}</td>
               <td>{it.ClassSize}</td>
               <td>{it.StartDate ? it.StartDate.slice(0, 10) : "—"}</td>

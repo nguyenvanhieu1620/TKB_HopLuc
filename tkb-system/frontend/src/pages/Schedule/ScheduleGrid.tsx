@@ -160,6 +160,26 @@ function trainingModeHint(mode: "CQ" | "LT" | null): string {
   return "";
 }
 
+// Việc AZ: Lớp có thể ghi đè kiểu lịch học riêng (khác Hệ đào tạo thật của Ngành, vd văn bằng 2) —
+// hiện rõ NGAY khi có ghi đè để Admin không nhầm tưởng lịch phải theo đúng Hệ gốc của Ngành.
+function classScheduleModeEffective(cls: SchoolClass): "CQ" | "LT" | null {
+  return cls.SchedulePatternOverride || cls.TrainingMode;
+}
+
+function ClassScheduleModeHint({ cls }: { cls: SchoolClass }) {
+  const effective = classScheduleModeEffective(cls);
+  if (cls.SchedulePatternOverride) {
+    return (
+      <>
+        Kiểu lịch học: <b>{trainingModeLabel(cls.SchedulePatternOverride)}</b> (ghi đè riêng, Ngành gốc là {trainingModeLabel(cls.TrainingMode)}) — {trainingModeHint(effective)}
+      </>
+    );
+  }
+  return (
+    <>Hệ đào tạo: <b>{trainingModeLabel(cls.TrainingMode)}</b> — {trainingModeHint(cls.TrainingMode)}</>
+  );
+}
+
 // Gộp các buổi cùng MergedSessionId (ghép lớp) thành 1 nhóm hiển thị chung;
 // các buổi không ghép lớp giữ nguyên từng nhóm riêng lẻ.
 interface EventGroup { key: string; events: ScheduleItem[]; isMerged: boolean }
@@ -1010,7 +1030,7 @@ export default function ScheduleGrid() {
                 </select>
                 {selectedFormClass && (
                   <div className="hint mt-1">
-                    Hệ đào tạo: <b>{trainingModeLabel(selectedFormClass.TrainingMode)}</b> — {trainingModeHint(selectedFormClass.TrainingMode)}
+                    <ClassScheduleModeHint cls={selectedFormClass} />
                   </div>
                 )}
               </div>
@@ -1095,9 +1115,11 @@ export default function ScheduleGrid() {
               <div className="hint mt-1">Giữ Ctrl (Windows) / Cmd (Mac) để chọn ít nhất 2 lớp cần ghép</div>
               {selectedMergeClasses.length > 0 && (
                 <div className="hint mt-1">
-                  Hệ đào tạo: {selectedMergeClasses.map((c) => `${c.ClassName} (${trainingModeLabel(c.TrainingMode)})`).join(", ")}
-                  {new Set(selectedMergeClasses.map((c) => c.TrainingMode)).size > 1 && (
-                    <span className="error-text mt-0"> — Các lớp khác hệ đào tạo không thể ghép chung</span>
+                  Kiểu lịch học: {selectedMergeClasses.map((c) => (
+                    `${c.ClassName} (${trainingModeLabel(classScheduleModeEffective(c))}${c.SchedulePatternOverride ? " - ghi đè" : ""})`
+                  )).join(", ")}
+                  {new Set(selectedMergeClasses.map((c) => classScheduleModeEffective(c))).size > 1 && (
+                    <span className="error-text mt-0"> — Các lớp khác kiểu lịch học không thể ghép chung</span>
                   )}
                 </div>
               )}
@@ -1490,7 +1512,9 @@ export default function ScheduleGrid() {
                     {visibleAllClasses.map((c) => (
                       <th key={c.ClassId}>
                         {c.ClassName}
-                        <div className="text-[11px] font-normal text-gray-400">{trainingModeLabel(c.TrainingMode)} · {c.ClassSize} SV</div>
+                        <div className="text-[11px] font-normal text-gray-400">
+                          {trainingModeLabel(classScheduleModeEffective(c))}{c.SchedulePatternOverride ? " (ghi đè)" : ""} · {c.ClassSize} SV
+                        </div>
                       </th>
                     ))}
                   </tr>
