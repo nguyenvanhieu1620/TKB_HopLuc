@@ -3,7 +3,7 @@ import { sql, getPool } from "../config/db";
 import { HttpError } from "../types";
 import { getPolicyValue } from "./policyConfig";
 import {
-  getPeriodMinutes, getTotalPeriodsForSubject, getPeriodTimelineForSubject,
+  getPeriodMinutes, getTotalPeriodsForSubject, getPeriodTimelineForSubject, getWeeksInSemester,
   checkRoomCapacity, checkSessionLength, checkDailyHoursLimit, checkTeacherWeeklyHours, checkTeacherYearlyHours,
   CAPACITY_POLICY_BY_ROOM_TYPE, ROOM_TYPES_BY_CATEGORY, roomCategoryFor,
 } from "./policyRules";
@@ -234,14 +234,16 @@ async function tryPlaceGroupSplitBlock(ctx: RunContext, params: PlaceGroupSplitP
   return { success: true };
 }
 
-// Xử lý 1 phần (Lý thuyết hoặc Thực hành) của 1 môn: tính nhóm phòng, sĩ số/nhóm, rồi lặp xếp từng
-// block (giảm dần kích thước block nếu block đầy đủ không đặt được ở đâu trong khung, xuống tối
-// thiểu 1 tiết trước khi coi là hết cách).
+// Xử lý 1 phần (Lý thuyết hoặc Thực hành) của 1 môn TRONG TUẦN đang xét: tính nhóm phòng, sĩ số/
+// nhóm, rồi lặp xếp từng block cho tới khi đạt `target` (chỉ tiêu TUẦN NÀY — đã tính sẵn ở
+// runAutoSchedule, KHÔNG phải toàn bộ phần còn thiếu cả Kỳ) — giảm dần kích thước block nếu block
+// đầy đủ không đặt được ở đâu trong khung tuần (ctx.rangeStart..ctx.rangeEnd), xuống tối thiểu 1
+// tiết trước khi coi là hết cách cho tuần này.
 async function processSubjectPart(
   ctx: RunContext,
   task: SubjectTask,
   sessionType: "Theory" | "Practice",
-  remaining: number,
+  target: number,
   rooms: RoomRow[],
   classSize: number
 ): Promise<{ scheduled: number; failureReason?: string }> {
@@ -260,7 +262,7 @@ async function processSubjectPart(
   const groupCount = classSize > capacityLimit ? Math.ceil(classSize / capacityLimit) : 1;
 
   let scheduled = 0;
-  let left = remaining;
+  let left = target;
   while (left > 0) {
     let blockSize = Math.min(left, maxPerSession);
     let placed = false;
@@ -282,13 +284,13 @@ async function processSubjectPart(
     }
     if (!placed) {
       const label = sessionType === "Theory" ? "Lý thuyết" : "Thực hành";
-      return { scheduled, failureReason: `Hết slot hợp lệ trong Kỳ cho phần ${label} — còn thiếu ${left} tiết` };
+      return { scheduled, failureReason: `Hết slot hợp lệ trong Tuần này cho phần ${label} — còn thiếu ${left} tiết` };
     }
   }
   return { scheduled };
 }
 
-export async function runAutoSchedule(classId: number, semesterId: number, userId: number): Promise<AutoScheduleReport> {
+export async function runAutoSchedule(classId: number, semesterId: number, weekNumber: number, userId: number): Promise<AutoScheduleReport> {
   const pool = await getPool();
 
   const classResult = await pool
@@ -319,6 +321,20 @@ export async function runAutoSchedule(classId: number, semesterId: number, userI
     err.status = 400;
     throw err;
   }
+
+  // Xếp CHỈ trong đúng 1 Tuần của Kỳ (Tuần 1..N tính từ StartDate, cùng cách đánh số đã dùng ở
+  // frontend/utils/calendar.ts's getWeeksInSemester — bản backend là getWeeksInSemester trong
+  // policyRules.ts) — KHÔNG động tới các tuần khác. Chỉ tính trong phạm vi TeachingEndDate (chừa
+  // vùng thi cuối kỳ), không tính các tuần đã qua vùng thi.
+  const teachingEnd = semester.TeachingEndDate || semester.EndDate;
+  const weeks = getWeeksInSemester(semester.StartDate, teachingEnd);
+  if (weekNumber < 1 || weekNumber > weeks.length) {
+    const err: HttpError = new Error(`Tuần không hợp lệ — Kỳ này có ${weeks.length} tuần trong phạm vi dạy học`);
+    err.status = 400;
+    throw err;
+  }
+  const targetWeek = weeks[weekNumber - 1];
+  const weeksRemaining = weeks.length - weekNumber + 1;
 
   const classInfo = await getClassTrainingMode(classId);
 
@@ -390,8 +406,8 @@ export async function runAutoSchedule(classId: number, semesterId: number, userI
   const ctx: RunContext = {
     classId, semesterId,
     trainingMode: classInfo?.trainingMode ?? null,
-    rangeStart: semester.StartDate,
-    rangeEnd: semester.TeachingEndDate || semester.EndDate,
+    rangeStart: targetWeek.start,
+    rangeEnd: targetWeek.end > teachingEnd ? teachingEnd : targetWeek.end,
     sessions: sessionsResult.recordset,
     teacherLoadTally: new Map(),
     autoScheduleRunId,
@@ -401,14 +417,25 @@ export async function runAutoSchedule(classId: number, semesterId: number, userI
 
   const subjectResults: AutoScheduleSubjectResult[] = [];
   for (const task of subjectTasks) {
-    const periodsNeeded = task.theoryRemaining + task.practiceRemaining;
-    if (periodsNeeded === 0) {
+    const totalRemaining = task.theoryRemaining + task.practiceRemaining;
+    if (totalRemaining === 0) {
       subjectResults.push({
         subjectId: task.subjectId, subjectName: task.subjectName,
         periodsNeeded: 0, periodsScheduled: 0, isComplete: true,
       });
       continue;
     }
+
+    // Chỉ tiêu TUẦN NÀY = số tiết còn thiếu cả Kỳ chia đều cho số tuần còn lại (làm tròn lên tiết
+    // gần nhất) — tính riêng Lý thuyết/Thực hành vì có thể khác nhóm phòng/GV khả dụng.
+    const theoryQuota = task.theoryRemaining > 0
+      ? Math.min(task.theoryRemaining, Math.ceil(task.theoryRemaining / weeksRemaining))
+      : 0;
+    const practiceQuota = task.practiceRemaining > 0
+      ? Math.min(task.practiceRemaining, Math.ceil(task.practiceRemaining / weeksRemaining))
+      : 0;
+    const periodsNeeded = theoryQuota + practiceQuota;
+
     if (task.teacherIds.length === 0) {
       subjectResults.push({
         subjectId: task.subjectId, subjectName: task.subjectName,
@@ -421,13 +448,13 @@ export async function runAutoSchedule(classId: number, semesterId: number, userI
     let scheduled = 0;
     const reasons: string[] = [];
 
-    if (task.theoryRemaining > 0) {
-      const result = await processSubjectPart(ctx, task, "Theory", task.theoryRemaining, rooms, cls.ClassSize);
+    if (theoryQuota > 0) {
+      const result = await processSubjectPart(ctx, task, "Theory", theoryQuota, rooms, cls.ClassSize);
       scheduled += result.scheduled;
       if (result.failureReason) reasons.push(result.failureReason);
     }
-    if (task.practiceRemaining > 0) {
-      const result = await processSubjectPart(ctx, task, "Practice", task.practiceRemaining, rooms, cls.ClassSize);
+    if (practiceQuota > 0) {
+      const result = await processSubjectPart(ctx, task, "Practice", practiceQuota, rooms, cls.ClassSize);
       scheduled += result.scheduled;
       if (result.failureReason) reasons.push(result.failureReason);
     }

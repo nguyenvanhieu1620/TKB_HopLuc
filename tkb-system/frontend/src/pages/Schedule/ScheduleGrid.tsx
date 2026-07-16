@@ -956,15 +956,17 @@ export default function ScheduleGrid() {
     }
   }
 
+  // Tự động xếp lịch CHỈ trong đúng Tuần đang xem (không động tới tuần khác) — dùng đúng weekNumber
+  // của currentWeek, khớp với cách đánh số Tuần 1..N của chế độ xem "Theo kỳ" hiện có.
   async function handleAutoSchedule() {
-    if (!filters.classId || !filters.semesterId) return;
-    if (!confirm("Tự động xếp lịch cho Lớp + Kỳ đang chọn? Có thể mất vài chục giây tùy số môn cần xếp.")) return;
+    if (!filters.classId || !filters.semesterId || !currentWeek) return;
+    if (!confirm(`Tự động xếp lịch cho Tuần ${currentWeek.weekNumber} của Lớp + Kỳ đang chọn?`)) return;
     setAutoScheduleError("");
     setAutoScheduleReport(null);
     setAutoScheduling(true);
     try {
       const res = await axiosClient.post<AutoScheduleReport>("/schedule/auto-generate", {
-        classId: Number(filters.classId), semesterId: Number(filters.semesterId),
+        classId: Number(filters.classId), semesterId: Number(filters.semesterId), weekNumber: currentWeek.weekNumber,
       });
       setAutoScheduleReport(res.data);
       loadSchedule();
@@ -1097,47 +1099,9 @@ export default function ScheduleGrid() {
             <button type="button" onClick={() => { clearEditingIfActive(); setShowGroupForm((v) => !v); setShowForm(false); setShowMergeForm(false); setGroupError(""); }}>
               {showGroupForm ? "Đóng tách nhóm" : "🧩 Xếp theo nhóm"}
             </button>
-            {filters.classId && filters.semesterId && (
-              <button type="button" disabled={autoScheduling} onClick={handleAutoSchedule}>
-                {autoScheduling ? "Đang tự động xếp..." : "🤖 Tự động xếp lịch"}
-              </button>
-            )}
           </>
         )}
       </div>
-
-      {isAdmin && autoScheduleError && <div className="error-text">{autoScheduleError}</div>}
-
-      {isAdmin && autoScheduleReport && (
-        <div className="inline-form items-start flex-col">
-          <p className="hint">
-            Đã xếp được {autoScheduleReport.totalPeriodsScheduled}/{autoScheduleReport.totalPeriodsNeeded} tiết
-            còn thiếu trong Kỳ này.
-          </p>
-          <table className="data-table">
-            <thead>
-              <tr><th>Môn học</th><th>Đã xếp / Cần xếp</th><th>Trạng thái</th></tr>
-            </thead>
-            <tbody>
-              {autoScheduleReport.subjectResults.map((r) => (
-                <tr key={r.subjectId} className={r.isComplete ? "" : "row-danger"}>
-                  <td>{r.subjectName}</td>
-                  <td>{r.periodsScheduled}/{r.periodsNeeded} tiết</td>
-                  <td>
-                    {r.isComplete
-                      ? <span className="text-green-600 text-[13px]">✓ Đủ</span>
-                      : <span className="error-text mt-0">Thiếu — {r.failureReason || "chưa xếp đủ"}</span>}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <div className="flex gap-2 mt-1">
-            <button type="button" onClick={() => setAutoScheduleReport(null)}>Đóng</button>
-            <button type="button" onClick={handleCancelAutoSchedule}>Hủy toàn bộ lần xếp này</button>
-          </div>
-        </div>
-      )}
 
       {isAdmin && showForm && (
         <form className="schedule-form" onSubmit={handleSubmit}>
@@ -1472,7 +1436,46 @@ export default function ScheduleGrid() {
             {showCopyWeekForm ? "Đóng sao chép lịch" : "📋 Sao chép lịch tuần này"}
           </button>
         )}
+        {isAdmin && currentWeek && (
+          <button type="button" disabled={autoScheduling} onClick={handleAutoSchedule}>
+            {autoScheduling ? "Đang tự động xếp..." : "🤖 Tự động xếp lịch tuần này"}
+          </button>
+        )}
       </div>
+
+      {isAdmin && autoScheduleError && <div className="error-text">{autoScheduleError}</div>}
+
+      {isAdmin && autoScheduleReport && (
+        <div className="inline-form items-start flex-col">
+          <p className="hint">
+            Tuần {currentWeek?.weekNumber}: đã xếp được {autoScheduleReport.totalPeriodsScheduled}/{autoScheduleReport.totalPeriodsNeeded} tiết
+            theo chỉ tiêu tuần này (chia đều số tiết còn thiếu cả Kỳ cho số tuần còn lại). Có thể chuyển sang
+            Tuần kế tiếp rồi bấm lại để tiếp tục xếp dần.
+          </p>
+          <table className="data-table">
+            <thead>
+              <tr><th>Môn học</th><th>Đã xếp / Chỉ tiêu tuần</th><th>Trạng thái</th></tr>
+            </thead>
+            <tbody>
+              {autoScheduleReport.subjectResults.map((r) => (
+                <tr key={r.subjectId} className={r.isComplete ? "" : "row-danger"}>
+                  <td>{r.subjectName}</td>
+                  <td>{r.periodsScheduled}/{r.periodsNeeded} tiết</td>
+                  <td>
+                    {r.isComplete
+                      ? <span className="text-green-600 text-[13px]">✓ Đủ</span>
+                      : <span className="error-text mt-0">Thiếu — {r.failureReason || "chưa xếp đủ"}</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="flex gap-2 mt-1">
+            <button type="button" onClick={() => setAutoScheduleReport(null)}>Đóng</button>
+            <button type="button" onClick={handleCancelAutoSchedule}>Hủy toàn bộ lần xếp này</button>
+          </div>
+        </div>
+      )}
 
       {isAdmin && currentWeek && showCopyWeekForm && (
         <form className="schedule-form" onSubmit={handleCopyWeek}>

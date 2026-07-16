@@ -5,18 +5,20 @@ import { runAutoSchedule, cancelAutoScheduleRun } from "../utils/autoScheduler";
 interface AutoGenerateBody {
   classId?: number;
   semesterId?: number;
+  weekNumber?: number;
 }
 
-// Chạy thuật toán tự động xếp TKB cho đúng 1 Lớp + 1 Kỳ — toàn bộ logic nằm ở autoScheduler.ts,
-// controller chỉ gọi hàm chính rồi trả kết quả.
+// Chạy thuật toán tự động xếp TKB cho đúng 1 Lớp + 1 Kỳ + 1 TUẦN cụ thể (Tuần 1..N, khớp cách đánh
+// số Tuần đã có ở chế độ xem "Theo kỳ") — toàn bộ logic nằm ở autoScheduler.ts, controller chỉ gọi
+// hàm chính rồi trả kết quả.
 export async function generate(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { classId, semesterId } = req.body as AutoGenerateBody;
-    if (!classId || !semesterId) {
-      res.status(400).json({ message: "Thiếu classId hoặc semesterId" });
+    const { classId, semesterId, weekNumber } = req.body as AutoGenerateBody;
+    if (!classId || !semesterId || !weekNumber) {
+      res.status(400).json({ message: "Thiếu classId, semesterId hoặc weekNumber" });
       return;
     }
-    const report = await runAutoSchedule(classId, semesterId, req.user!.userId);
+    const report = await runAutoSchedule(classId, semesterId, weekNumber, req.user!.userId);
     res.status(201).json(report);
   } catch (err) {
     next(err);

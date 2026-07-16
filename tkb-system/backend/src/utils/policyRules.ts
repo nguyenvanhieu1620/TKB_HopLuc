@@ -373,13 +373,42 @@ export async function getPeriodTimelineForSubject(classId: number, subjectId: nu
 
 // Việc BE: Thứ 2 (đầu tuần) chứa 1 ngày bất kỳ — tính bằng UTC để tránh lệch múi giờ server, cùng
 // quy ước "Thứ 2 đầu tuần" đã dùng ở frontend (utils/calendar.ts's startOfWeek: day===0 ? -6 : 1-day).
-function mondayOfWeekContaining(dateStr: string): string {
+// Export để autoScheduler.ts (xếp theo TUẦN) tái sử dụng đúng mốc tuần, không định nghĩa lại.
+export function mondayOfWeekContaining(dateStr: string): string {
   const [y, m, d] = dateStr.slice(0, 10).split("-").map(Number);
   const date = new Date(Date.UTC(y, m - 1, d));
   const day = date.getUTCDay(); // 0=CN, 1=T2, ... 6=T7
   const diff = day === 0 ? -6 : 1 - day;
   date.setUTCDate(date.getUTCDate() + diff);
   return date.toISOString().slice(0, 10);
+}
+
+function addDaysToDateStr(dateStr: string, days: number): string {
+  const [y, m, d] = dateStr.slice(0, 10).split("-").map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+export interface SemesterWeek {
+  weekNumber: number;
+  start: string; // YYYY-MM-DD
+  end: string; // YYYY-MM-DD
+}
+
+// CÙNG thuật toán với frontend/utils/calendar.ts's getWeeksInSemester (Tuần 1 = Thứ 2 của tuần chứa
+// startDate, các tuần sau +7 ngày, đến khi vượt qua endDate) — bản backend dùng chuỗi ngày UTC, để
+// autoScheduler.ts (xếp theo TUẦN) đánh số Tuần 1..N khớp đúng với dropdown Tuần đang hiện ở frontend.
+export function getWeeksInSemester(startDate: string, endDate: string): SemesterWeek[] {
+  const weeks: SemesterWeek[] = [];
+  let cursor = mondayOfWeekContaining(startDate);
+  let weekNumber = 1;
+  while (cursor <= endDate) {
+    weeks.push({ weekNumber, start: cursor, end: addDaysToDateStr(cursor, 6) });
+    cursor = addDaysToDateStr(cursor, 7);
+    weekNumber++;
+  }
+  return weeks;
 }
 
 interface TeacherWeeklyHoursCheckParams {
