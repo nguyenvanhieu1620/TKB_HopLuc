@@ -125,10 +125,34 @@ interface PlaceBlockParams {
   groupLabel?: string | null;
 }
 
+// 1 buổi (1 Ngày + 1 Ca cụ thể) của 1 Lớp chỉ dành cho ĐÚNG 1 MÔN — không chia nhỏ nhét nhiều môn
+// khác nhau vào cùng buổi (kể cả khi chưa dùng hết giới hạn tiết tối đa/buổi). Kiểm tra CẢ Ca (không
+// chỉ đúng khoảng phút của block đang thử) đã có Schedule của Lớp này thuộc MÔN KHÁC hay chưa — có
+// thì bỏ qua slot này. Không áp dụng cho các dòng CÙNG môn (vd Tách nhóm/Ghép lớp tự tạo nhiều dòng
+// cho cùng 1 môn ở cùng slot — đó là cơ chế khác, không phải "môn khác chen vào").
+async function isSlotTakenByOtherSubject(classId: number, date: string, session: SessionRow, subjectId: number): Promise<boolean> {
+  const pool = await getPool();
+  const result = await pool
+    .request()
+    .input("classId", sql.Int, classId)
+    .input("date", sql.Date, date)
+    .input("sessionStart", sql.VarChar, session.StartTime)
+    .input("sessionEnd", sql.VarChar, session.EndTime)
+    .input("subjectId", sql.Int, subjectId)
+    .query<{ ScheduleId: number }>(`
+      SELECT TOP 1 ScheduleId FROM Schedule
+      WHERE ClassId = @classId AND ScheduleDate = @date
+        AND StartTime < @sessionEnd AND EndTime > @sessionStart
+        AND SubjectId <> @subjectId
+    `);
+  return result.recordset.length > 0;
+}
+
 // Dò (Ngày, Ca) tăng dần trong khung [rangeStart, rangeEnd] — với mỗi (Ngày, Ca) hợp lệ theo Hệ đào
-// tạo (checkTrainingModeRule dùng như BỘ LỌC CỨNG ở đây, khác với xếp tay chỉ cảnh báo), thử từng
-// GV (ưu tiên GV đang có ít giờ nhất trong lần chạy này) × từng Phòng phù hợp — gọi ĐỦ các hàm kiểm
-// tra đã có, pass hết thì tạo thật ngay (lưu ngay theo đúng chỉ đạo, không bọc transaction lớn).
+// tạo (checkTrainingModeRule dùng như BỘ LỌC CỨNG ở đây, khác với xếp tay chỉ cảnh báo) và CHƯA bị
+// môn khác chiếm buổi (isSlotTakenByOtherSubject), thử từng GV (ưu tiên GV đang có ít giờ nhất trong
+// lần chạy này) × từng Phòng phù hợp — gọi ĐỦ các hàm kiểm tra đã có, pass hết thì tạo thật ngay (lưu
+// ngay theo đúng chỉ đạo, không bọc transaction lớn).
 async function tryPlaceSingleBlock(ctx: RunContext, params: PlaceBlockParams): Promise<{ success: boolean; scheduleId?: number }> {
   let cursor = ctx.rangeStart;
   while (cursor <= ctx.rangeEnd) {
@@ -144,6 +168,9 @@ async function tryPlaceSingleBlock(ctx: RunContext, params: PlaceBlockParams): P
 
       const trainingCheck = await checkTrainingModeRule({ classId: ctx.classId, scheduleDate: date, startTime: session.StartTime });
       if (trainingCheck.violated) continue;
+
+      const takenByOther = await isSlotTakenByOtherSubject(ctx.classId, date, session, params.subjectId);
+      if (takenByOther) continue;
 
       // Tối ưu hiệu năng QUAN TRỌNG: mọi phòng trong `eligibleRoomIds` CÙNG 1 nhóm loại phòng nên
       // checkSessionLength/checkDailyHoursLimit (chỉ phụ thuộc NHÓM loại phòng qua periodMinutes,
@@ -235,15 +262,24 @@ async function tryPlaceGroupSplitBlock(ctx: RunContext, params: PlaceGroupSplitP
 }
 
 // Xử lý 1 phần (Lý thuyết hoặc Thực hành) của 1 môn TRONG TUẦN đang xét: tính nhóm phòng, sĩ số/
-// nhóm, rồi lặp xếp từng block cho tới khi đạt `target` (chỉ tiêu TUẦN NÀY — đã tính sẵn ở
-// runAutoSchedule, KHÔNG phải toàn bộ phần còn thiếu cả Kỳ) — giảm dần kích thước block nếu block
-// đầy đủ không đặt được ở đâu trong khung tuần (ctx.rangeStart..ctx.rangeEnd), xuống tối thiểu 1
-// tiết trước khi coi là hết cách cho tuần này.
+// nhóm, rồi lặp xếp từng block trong khung tuần (ctx.rangeStart..ctx.rangeEnd).
+//
+// - KÍCH THƯỚC 1 block luôn tính từ `wholeRemaining` (phần còn thiếu CẢ MÔN, không phải chỉ tiêu
+//   tuần) — blockSize = MIN(phần còn lại CẢ MÔN tại thời điểm đó, giới hạn tối đa/buổi) — để luôn cố
+//   xếp TRỌN VẸN tối đa cho phép/buổi, không chia nhỏ theo chỉ tiêu tuần (Lỗi 2). Nếu kích thước đó
+//   không đặt được ở đâu trong tuần, giảm dần để thử, nhưng KHÔNG giảm xuống dưới 2 tiết trừ khi phần
+//   còn lại CẢ MÔN tại lượt lặp đó đúng bằng 1 — tránh tạo buổi lẻ tẻ 1 tiết không cần thiết.
+// - VÒNG LẶP (bao nhiêu block/buổi xếp trong 1 lần chạy tuần này) dừng khi đạt `quotaThisWeek` (chỉ
+//   tiêu tuần, có thể xếp NHỈNH hơn 1 chút vì block cuối luôn xếp trọn vẹn, không cắt giữa chừng) HOẶC
+//   khi môn đã xếp xong hoàn toàn — để các môn khác trong cùng tuần vẫn còn slot mà xếp, không bị 1
+//   môn chiếm hết cả tuần (đã xác nhận qua test thực tế: bỏ hẳn giới hạn này khiến môn xử lý trước
+//   chiếm hết slot của cả tuần, các môn xử lý sau nhận 0 tiết).
 async function processSubjectPart(
   ctx: RunContext,
   task: SubjectTask,
   sessionType: "Theory" | "Practice",
-  target: number,
+  wholeRemaining: number,
+  quotaThisWeek: number,
   rooms: RoomRow[],
   classSize: number
 ): Promise<{ scheduled: number; failureReason?: string }> {
@@ -262,11 +298,12 @@ async function processSubjectPart(
   const groupCount = classSize > capacityLimit ? Math.ceil(classSize / capacityLimit) : 1;
 
   let scheduled = 0;
-  let left = target;
-  while (left > 0) {
+  let left = wholeRemaining;
+  while (scheduled < quotaThisWeek && left > 0) {
     let blockSize = Math.min(left, maxPerSession);
+    const minBlockSize = left === 1 ? 1 : 2;
     let placed = false;
-    while (blockSize >= 1) {
+    while (blockSize >= minBlockSize) {
       const params: PlaceBlockParams = {
         subjectId: task.subjectId, sessionType, periods: blockSize, periodMinutes,
         eligibleRoomIds, teacherIds: task.teacherIds, totalStudents: classSize,
@@ -426,15 +463,24 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
       continue;
     }
 
-    // Chỉ tiêu TUẦN NÀY = số tiết còn thiếu cả Kỳ chia đều cho số tuần còn lại (làm tròn lên tiết
-    // gần nhất) — tính riêng Lý thuyết/Thực hành vì có thể khác nhóm phòng/GV khả dụng.
-    const theoryQuota = task.theoryRemaining > 0
-      ? Math.min(task.theoryRemaining, Math.ceil(task.theoryRemaining / weeksRemaining))
-      : 0;
-    const practiceQuota = task.practiceRemaining > 0
-      ? Math.min(task.practiceRemaining, Math.ceil(task.practiceRemaining / weeksRemaining))
-      : 0;
-    const periodsNeeded = theoryQuota + practiceQuota;
+    // Chỉ tiêu TUẦN NÀY (chia đều số tiết còn thiếu cả Kỳ cho số tuần còn lại, làm tròn lên) dùng
+    // CHO 2 việc: (1) quyết định phần nào (Lý thuyết/Thực hành) của môn này được XÉT xử lý trong
+    // tuần đang chạy — quota luôn > 0 khi phần đó còn thiếu; (2) làm giới hạn TỔNG SỐ TIẾT xếp được
+    // của phần đó TRONG TUẦN NÀY (vòng lặp ngoài của processSubjectPart dừng khi đạt quota) — đây là
+    // phần tự sửa lại so với bản đầu: thử bỏ hẳn giới hạn này (chỉ dùng quota để bật/tắt xét môn,
+    // không chặn số tiết) và test thật cho thấy 1-2 môn xử lý trước (theo thứ tự độ khó) chiếm hết
+    // slot cả tuần, các môn còn lại nhận 0 tiết — sai với tinh thần "xếp dần đều qua các tuần". Nên
+    // quota vẫn cần chặn TỔNG số tiết/tuần để công bằng giữa các môn.
+    // Cái ĐÚNG THEO YÊU CẦU đã sửa là KÍCH THƯỚC 1 BLOCK: processSubjectPart không còn tính blockSize
+    // từ quota nữa mà tính từ phần còn thiếu CẢ MÔN (task.theoryRemaining/practiceRemaining) — luôn
+    // cố xếp TRỌN VẸN tối đa/buổi thay vì cắt nhỏ theo chỉ tiêu tuần — nên block cuối cùng của 1 môn
+    // trong tuần vẫn có thể NHỈNH hơn quota một chút (quota không cắt giữa block), chỉ không được nhỏ
+    // hơn giới hạn tối thiểu 2 tiết (trừ khi còn đúng 1 tiết cuối cùng của cả môn).
+    // periodsNeeded/periodsScheduled báo cáo theo phần còn thiếu THẬT của cả môn (không phải theo
+    // chỉ tiêu tuần).
+    const theoryQuota = task.theoryRemaining > 0 ? Math.ceil(task.theoryRemaining / weeksRemaining) : 0;
+    const practiceQuota = task.practiceRemaining > 0 ? Math.ceil(task.practiceRemaining / weeksRemaining) : 0;
+    const periodsNeeded = totalRemaining;
 
     if (task.teacherIds.length === 0) {
       subjectResults.push({
@@ -449,12 +495,12 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
     const reasons: string[] = [];
 
     if (theoryQuota > 0) {
-      const result = await processSubjectPart(ctx, task, "Theory", theoryQuota, rooms, cls.ClassSize);
+      const result = await processSubjectPart(ctx, task, "Theory", task.theoryRemaining, theoryQuota, rooms, cls.ClassSize);
       scheduled += result.scheduled;
       if (result.failureReason) reasons.push(result.failureReason);
     }
     if (practiceQuota > 0) {
-      const result = await processSubjectPart(ctx, task, "Practice", practiceQuota, rooms, cls.ClassSize);
+      const result = await processSubjectPart(ctx, task, "Practice", task.practiceRemaining, practiceQuota, rooms, cls.ClassSize);
       scheduled += result.scheduled;
       if (result.failureReason) reasons.push(result.failureReason);
     }

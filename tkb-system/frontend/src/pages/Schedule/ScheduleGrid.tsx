@@ -1448,23 +1448,26 @@ export default function ScheduleGrid() {
       {isAdmin && autoScheduleReport && (
         <div className="inline-form items-start flex-col">
           <p className="hint">
-            Tuần {currentWeek?.weekNumber}: đã xếp được {autoScheduleReport.totalPeriodsScheduled}/{autoScheduleReport.totalPeriodsNeeded} tiết
-            theo chỉ tiêu tuần này (chia đều số tiết còn thiếu cả Kỳ cho số tuần còn lại). Có thể chuyển sang
-            Tuần kế tiếp rồi bấm lại để tiếp tục xếp dần.
+            Tuần {currentWeek?.weekNumber}: đã xếp thêm {autoScheduleReport.totalPeriodsScheduled} tiết trong tuần
+            này (trên tổng {autoScheduleReport.totalPeriodsNeeded} tiết còn thiếu cả Kỳ tính đến trước tuần này —
+            mỗi buổi chỉ dành cho đúng 1 môn, xếp trọn vẹn tối đa cho phép/buổi). Có thể chuyển sang Tuần kế
+            tiếp rồi bấm lại để tiếp tục xếp dần.
           </p>
           <table className="data-table">
             <thead>
-              <tr><th>Môn học</th><th>Đã xếp / Chỉ tiêu tuần</th><th>Trạng thái</th></tr>
+              <tr><th>Môn học</th><th>Đã xếp tuần này / Còn thiếu cả Kỳ</th><th>Trạng thái</th></tr>
             </thead>
             <tbody>
               {autoScheduleReport.subjectResults.map((r) => (
-                <tr key={r.subjectId} className={r.isComplete ? "" : "row-danger"}>
+                <tr key={r.subjectId} className={r.failureReason ? "row-danger" : ""}>
                   <td>{r.subjectName}</td>
                   <td>{r.periodsScheduled}/{r.periodsNeeded} tiết</td>
                   <td>
                     {r.isComplete
-                      ? <span className="text-green-600 text-[13px]">✓ Đủ</span>
-                      : <span className="error-text mt-0">Thiếu — {r.failureReason || "chưa xếp đủ"}</span>}
+                      ? <span className="text-green-600 text-[13px]">✓ Đã xếp xong cả môn</span>
+                      : r.failureReason
+                        ? <span className="error-text mt-0">{r.failureReason}</span>
+                        : <span className="hint mt-0">Đã xếp {r.periodsScheduled} tiết tuần này — còn lại tiếp tục ở tuần sau</span>}
                   </td>
                 </tr>
               ))}
