@@ -388,6 +388,9 @@ CREATE TABLE Schedule (
     -- giá trị = ScheduleId của nhóm đầu tiên trong lô. Dùng để tính TIẾN ĐỘ môn học không đếm trùng
     -- (các nhóm học song song/xoay vòng chỉ là 1 buổi thực chất, không phải nhiều buổi lặp lại).
     GroupBatchId     INT             NULL,
+    -- Đánh dấu mọi dòng do 1 lần chạy thuật toán tự động xếp lịch tạo ra — dùng để xem lại/hủy toàn
+    -- bộ 1 lần chạy cụ thể mà không ảnh hưởng dữ liệu xếp tay hoặc các lần chạy khác.
+    AutoScheduleRunId UNIQUEIDENTIFIER NULL,
     Note             NVARCHAR(500)   NULL,
     CreatedBy        INT             NULL,
     CreatedAt        DATETIME2       NOT NULL DEFAULT SYSDATETIME(),

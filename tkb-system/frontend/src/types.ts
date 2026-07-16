@@ -290,6 +290,23 @@ export interface CopyWeekResult {
   message?: string;
 }
 
+// Tự động xếp Thời khóa biểu (1 Lớp + 1 Kỳ mỗi lần chạy) — kết quả trả về sau khi gọi
+// POST /schedule/auto-generate.
+export interface AutoScheduleSubjectResult {
+  subjectId: number;
+  subjectName: string;
+  periodsNeeded: number;
+  periodsScheduled: number;
+  isComplete: boolean;
+  failureReason?: string;
+}
+export interface AutoScheduleReport {
+  autoScheduleRunId: string;
+  totalPeriodsNeeded: number;
+  totalPeriodsScheduled: number;
+  subjectResults: AutoScheduleSubjectResult[];
+}
+
 export interface Account {
   UserId: number;
   Username: string;

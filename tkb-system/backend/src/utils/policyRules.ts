@@ -4,11 +4,28 @@ import { getPolicyValue } from "./policyConfig";
 // Sĩ số tối đa theo loại phòng (Việc Q) và số giờ Lý thuyết/Thực hành mỗi buổi & mỗi ngày (Việc S)
 // đều lấy từ SchedulingPolicy — KHÔNG hard-code số, chỉ hard-code TÊN policy key.
 
-const CAPACITY_POLICY_BY_ROOM_TYPE: Record<string, string> = {
+// Export để autoScheduler.ts tái sử dụng đúng bảng tra policy-key-theo-loại-phòng (nhóm phòng nào
+// dùng chính sách sĩ số nào), không định nghĩa lại.
+export const CAPACITY_POLICY_BY_ROOM_TYPE: Record<string, string> = {
   LyThuyet: "MaxStudentsPerTheoryRoom",
   ThucHanh: "MaxStudentsPerPracticeGroup",
   LamSang: "MaxStudentsPerClinicalGroup",
 };
+
+// Việc BA/BB (ban đầu chỉ có ở frontend ScheduleGrid.tsx) — port sang backend để autoScheduler.ts
+// dùng chung, tránh định nghĩa lại logic suy ra nhóm loại phòng từ PracticeMode+SessionType.
+export const ROOM_TYPES_BY_CATEGORY: Record<string, string[]> = {
+  LyThuyet: ["LyThuyet", "SanBai"],
+  ThucHanh: ["ThucHanh", "Labo"],
+  LamSang: ["LamSang"],
+};
+
+export function roomCategoryFor(practiceMode: string | null, sessionType: "Theory" | "Practice"): string {
+  if (sessionType === "Theory") return "LyThuyet";
+  if (practiceMode === "LyThuyet") return "LyThuyet";
+  if (practiceMode === "LamSang") return "LamSang";
+  return "ThucHanh";
+}
 
 const ROOM_TYPE_LABEL: Record<string, string> = {
   LyThuyet: "Phòng lý thuyết",

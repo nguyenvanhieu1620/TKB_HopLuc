@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import axiosClient from "../../api/axiosClient";
 import { useAuth } from "../../context/AuthContext";
-import { ScheduleItem, ScheduleDetail, SchedulePeriodProgress, Semester, SchoolClass, Subject, Room, Teacher, Session, SchedulingPolicyItem, ApiErrorResponse, CopyWeekResult, CurriculumItem, Cohort } from "../../types";
+import { ScheduleItem, ScheduleDetail, SchedulePeriodProgress, Semester, SchoolClass, Subject, Room, Teacher, Session, SchedulingPolicyItem, ApiErrorResponse, CopyWeekResult, CurriculumItem, Cohort, AutoScheduleReport } from "../../types";
 import { AxiosError } from "axios";
 import { addDays, addMinutesToTime, colorForId, diffMinutesBetweenTimes, findTodayWeekIndex, getISOWeek, getISOWeekYear, getWeeksInSemester, mondayOfISOWeek, parseDateKey, startOfWeek, toDateKey, WEEKDAY_LABELS } from "../../../utils/calendar";
 import { buildWorkbook, downloadWorkbook } from "../../../utils/excel";
@@ -307,6 +307,11 @@ export default function ScheduleGrid() {
   const [showCopyWeekForm, setShowCopyWeekForm] = useState(false);
   const [copyWeekTargetIndex, setCopyWeekTargetIndex] = useState("");
   const [copyWeekError, setCopyWeekError] = useState("");
+
+  // Tự động xếp Thời khóa biểu (1 Lớp + 1 Kỳ đang chọn ở bộ lọc trên cùng).
+  const [autoScheduling, setAutoScheduling] = useState(false);
+  const [autoScheduleReport, setAutoScheduleReport] = useState<AutoScheduleReport | null>(null);
+  const [autoScheduleError, setAutoScheduleError] = useState("");
 
   const [selectedWeekIndex, setSelectedWeekIndex] = useState(0);
 
@@ -951,6 +956,34 @@ export default function ScheduleGrid() {
     }
   }
 
+  async function handleAutoSchedule() {
+    if (!filters.classId || !filters.semesterId) return;
+    if (!confirm("Tự động xếp lịch cho Lớp + Kỳ đang chọn? Có thể mất vài chục giây tùy số môn cần xếp.")) return;
+    setAutoScheduleError("");
+    setAutoScheduleReport(null);
+    setAutoScheduling(true);
+    try {
+      const res = await axiosClient.post<AutoScheduleReport>("/schedule/auto-generate", {
+        classId: Number(filters.classId), semesterId: Number(filters.semesterId),
+      });
+      setAutoScheduleReport(res.data);
+      loadSchedule();
+    } catch (err) {
+      const axiosErr = err as AxiosError<ApiErrorResponse>;
+      setAutoScheduleError(axiosErr.response?.data?.message || "Có lỗi xảy ra khi tự động xếp lịch");
+    } finally {
+      setAutoScheduling(false);
+    }
+  }
+
+  async function handleCancelAutoSchedule() {
+    if (!autoScheduleReport) return;
+    if (!confirm("Hủy toàn bộ lần xếp tự động này? Mọi buổi học vừa được tạo trong lần chạy này sẽ bị xóa.")) return;
+    await axiosClient.delete(`/schedule/auto-generate/${autoScheduleReport.autoScheduleRunId}`);
+    setAutoScheduleReport(null);
+    loadSchedule();
+  }
+
   async function handleDelete(id: number) {
     if (!confirm("Xóa buổi học này?")) return;
     await axiosClient.delete(`/schedule/${id}`);
@@ -1064,9 +1097,47 @@ export default function ScheduleGrid() {
             <button type="button" onClick={() => { clearEditingIfActive(); setShowGroupForm((v) => !v); setShowForm(false); setShowMergeForm(false); setGroupError(""); }}>
               {showGroupForm ? "Đóng tách nhóm" : "🧩 Xếp theo nhóm"}
             </button>
+            {filters.classId && filters.semesterId && (
+              <button type="button" disabled={autoScheduling} onClick={handleAutoSchedule}>
+                {autoScheduling ? "Đang tự động xếp..." : "🤖 Tự động xếp lịch"}
+              </button>
+            )}
           </>
         )}
       </div>
+
+      {isAdmin && autoScheduleError && <div className="error-text">{autoScheduleError}</div>}
+
+      {isAdmin && autoScheduleReport && (
+        <div className="inline-form items-start flex-col">
+          <p className="hint">
+            Đã xếp được {autoScheduleReport.totalPeriodsScheduled}/{autoScheduleReport.totalPeriodsNeeded} tiết
+            còn thiếu trong Kỳ này.
+          </p>
+          <table className="data-table">
+            <thead>
+              <tr><th>Môn học</th><th>Đã xếp / Cần xếp</th><th>Trạng thái</th></tr>
+            </thead>
+            <tbody>
+              {autoScheduleReport.subjectResults.map((r) => (
+                <tr key={r.subjectId} className={r.isComplete ? "" : "row-danger"}>
+                  <td>{r.subjectName}</td>
+                  <td>{r.periodsScheduled}/{r.periodsNeeded} tiết</td>
+                  <td>
+                    {r.isComplete
+                      ? <span className="text-green-600 text-[13px]">✓ Đủ</span>
+                      : <span className="error-text mt-0">Thiếu — {r.failureReason || "chưa xếp đủ"}</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="flex gap-2 mt-1">
+            <button type="button" onClick={() => setAutoScheduleReport(null)}>Đóng</button>
+            <button type="button" onClick={handleCancelAutoSchedule}>Hủy toàn bộ lần xếp này</button>
+          </div>
+        </div>
+      )}
 
       {isAdmin && showForm && (
         <form className="schedule-form" onSubmit={handleSubmit}>

@@ -1,11 +1,15 @@
 import { Router } from "express";
 import * as ctrl from "../controllers/scheduleController";
+import * as autoCtrl from "../controllers/autoScheduleController";
 import { authenticate, requireRole } from "../middleware/auth";
 
 const router = Router();
 
 router.get("/", authenticate, ctrl.list);
 router.get("/period-progress", authenticate, ctrl.periodProgressByClass);
+// Đặt TRƯỚC router.delete("/:id", ...) để Express không khớp nhầm "auto-generate" thành :id.
+router.post("/auto-generate", authenticate, requireRole("Admin"), autoCtrl.generate);
+router.delete("/auto-generate/:runId", authenticate, requireRole("Admin"), autoCtrl.cancel);
 router.get("/:id", authenticate, ctrl.getById);
 router.post("/merged", authenticate, requireRole("Admin"), ctrl.mergedCreate);
 router.post("/grouped", authenticate, requireRole("Admin"), ctrl.groupedCreate);
