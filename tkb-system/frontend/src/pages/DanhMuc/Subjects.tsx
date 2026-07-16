@@ -14,13 +14,33 @@ interface SubjectForm {
   theoryHours: string;
   practiceHours: string;
   examHours: string;
+  category: string;
   isActive: boolean;
 }
 
 const emptyForm: SubjectForm = {
   subjectCode: "", subjectName: "", facultyId: "", majorId: "", credits: "", theoryHours: "", practiceHours: "", examHours: "",
-  isActive: true,
+  category: "", isActive: true,
 };
+
+// Phân loại môn theo khối kiến thức — dùng để ưu tiên thứ tự xử lý môn khi tự động xếp lịch (Đại
+// cương xếp trước, rồi Cơ sở ngành, rồi Chuyên ngành). Mã nội bộ không dấu, nhãn tiếng Việt ở UI —
+// cùng quy ước với PracticeMode (Việc BA).
+const CATEGORY_OPTIONS: { value: string; label: string }[] = [
+  { value: "DaiCuong", label: "Đại cương" },
+  { value: "CoSoNganh", label: "Cơ sở ngành" },
+  { value: "ChuyenNganh", label: "Chuyên ngành" },
+];
+const CATEGORY_LABEL: Record<string, string> = Object.fromEntries(CATEGORY_OPTIONS.map((o) => [o.value, o.label]));
+
+function parseCategory(raw: string): { value: string; error: boolean } {
+  const trimmed = raw.trim();
+  if (!trimmed) return { value: "", error: false };
+  const normalized = normalizeText(trimmed);
+  const match = CATEGORY_OPTIONS.find((o) => normalizeText(o.label) === normalized);
+  if (match) return { value: match.value, error: false };
+  return { value: "", error: true };
+}
 
 interface ExcelSubjectRow {
   "Mã môn"?: string | number;
@@ -64,7 +84,9 @@ function parseImportRow(raw: ExcelSubjectRow, rowNum: number, faculties: Faculty
   const theoryHours = Number(raw["Giờ lý thuyết"]) || 0;
   const practiceHours = Number(raw["Giờ thực hành"]) || 0;
   const examHours = Number(raw["Giờ thi/kiểm tra"]) || 0;
-  const category = String(raw["Phân loại"] ?? "").trim();
+  const categoryRaw = String(raw["Phân loại"] ?? "").trim();
+  const categoryParsed = parseCategory(categoryRaw);
+  const category = categoryParsed.value;
 
   let error: string | null = null;
   let errorDetail: string | undefined;
@@ -73,6 +95,7 @@ function parseImportRow(raw: ExcelSubjectRow, rowNum: number, faculties: Faculty
 
   if (!subjectName) error = "Thiếu tên môn học";
   if (!error && !subjectCode) error = "Thiếu mã môn";
+  if (!error && categoryParsed.error) error = `Không nhận diện được "Phân loại" là "${categoryRaw}"`;
 
   if (!majorRaw) {
     if (!error) error = "Thiếu ngành";
@@ -179,6 +202,7 @@ export default function Subjects() {
       theoryHours: Number(form.theoryHours) || 0,
       practiceHours: Number(form.practiceHours) || 0,
       examHours: Number(form.examHours) || 0,
+      category: form.category || undefined,
       isActive: form.isActive,
     };
     try {
@@ -206,6 +230,7 @@ export default function Subjects() {
       theoryHours: String(item.TheoryHours),
       practiceHours: String(item.PracticeHours),
       examHours: String(item.ExamHours),
+      category: item.Category || "",
       isActive: item.IsActive,
     });
   }
@@ -388,7 +413,7 @@ export default function Subjects() {
                       <td>{r.theoryHours}</td>
                       <td>{r.practiceHours}</td>
                       <td>{r.examHours}</td>
-                      <td>{r.category}</td>
+                      <td>{CATEGORY_LABEL[r.category] || "—"}</td>
                       <td>
                         {r.error
                           ? <span className="error-text mt-0" title={r.errorDetail}>{r.error}</span>
@@ -444,6 +469,10 @@ export default function Subjects() {
           onChange={(e) => setForm({ ...form, practiceHours: e.target.value })} />
         <input type="number" placeholder="Giờ thi/kiểm tra" value={form.examHours}
           onChange={(e) => setForm({ ...form, examHours: e.target.value })} />
+        <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}>
+          <option value="">-- Chưa phân loại --</option>
+          {CATEGORY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
         <label className="flex items-center gap-2">
           <input type="checkbox" checked={form.isActive}
             onChange={(e) => setForm({ ...form, isActive: e.target.checked })} />
@@ -458,7 +487,7 @@ export default function Subjects() {
         <thead>
           <tr>
             <th>#</th><th>Mã môn</th><th>Tên môn</th><th>Ngành</th><th>Khoa</th><th>Tín chỉ</th>
-            <th>LT</th><th>TH</th><th>Thi</th><th>Trạng thái</th><th></th>
+            <th>LT</th><th>TH</th><th>Thi</th><th>Phân loại</th><th>Trạng thái</th><th></th>
           </tr>
         </thead>
         <tbody>
@@ -473,6 +502,7 @@ export default function Subjects() {
               <td>{it.TheoryHours}</td>
               <td>{it.PracticeHours}</td>
               <td>{it.ExamHours}</td>
+              <td>{CATEGORY_LABEL[it.Category || ""] || "—"}</td>
               <td>
                 {it.IsActive
                   ? <span className="text-[11px] px-1.5 py-0.5 rounded bg-green-100 text-green-700">Đang sử dụng</span>

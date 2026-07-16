@@ -12,6 +12,7 @@ interface SubjectBody {
   theoryHours?: number;
   practiceHours?: number;
   examHours?: number;
+  category?: string | null;
   isActive?: boolean;
 }
 
@@ -25,6 +26,17 @@ interface BulkSubjectRow {
   practiceHours?: number;
   examHours?: number;
   category?: string;
+}
+
+const VALID_CATEGORIES = ["DaiCuong", "CoSoNganh", "ChuyenNganh"];
+
+// Phân loại môn theo khối kiến thức (Đại cương/Cơ sở ngành/Chuyên ngành) — dùng để ưu tiên thứ tự xử
+// lý môn khi tự động xếp lịch. Rỗng/undefined = chưa phân loại (NULL), hợp lệ; giá trị khác 3 mã
+// chuẩn thì từ chối rõ ràng thay vì lưu rác như trước (Category vốn không có CHECK constraint).
+function normalizeCategory(category: string | null | undefined): { value: string | null; valid: boolean } {
+  if (!category) return { value: null, valid: true };
+  if (VALID_CATEGORIES.includes(category)) return { value: category, valid: true };
+  return { value: null, valid: false };
 }
 
 interface BulkRowResult {
@@ -52,7 +64,7 @@ export async function list(req: AuthRequest, res: Response, next: NextFunction):
 
     const result = await request.query(`
       SELECT sub.SubjectId, sub.SubjectCode, sub.SubjectName, sub.FacultyId, f.FacultyName,
-             sub.MajorId, m.MajorName,
+             sub.MajorId, m.MajorName, sub.Category,
              sub.Credits, sub.TheoryHours, sub.PracticeHours, sub.ExamHours, sub.IsActive
       FROM Subjects sub
       LEFT JOIN Faculties f ON f.FacultyId = sub.FacultyId
@@ -68,7 +80,7 @@ export async function list(req: AuthRequest, res: Response, next: NextFunction):
 
 export async function create(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { subjectName, subjectCode, facultyId, majorId, credits, theoryHours, practiceHours, examHours } =
+    const { subjectName, subjectCode, facultyId, majorId, credits, theoryHours, practiceHours, examHours, category } =
       req.body as SubjectBody;
     if (!subjectName) {
       res.status(400).json({ message: "Thiếu tên môn học" });
@@ -80,6 +92,11 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
     }
     if (!subjectCode || !subjectCode.trim()) {
       res.status(400).json({ message: "Thiếu mã môn — mã môn bắt buộc và phải duy nhất" });
+      return;
+    }
+    const categoryResult = normalizeCategory(category);
+    if (!categoryResult.valid) {
+      res.status(400).json({ message: "Phân loại không hợp lệ" });
       return;
     }
 
@@ -104,10 +121,11 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
       .input("theoryHours", sql.Int, theoryHours || 0)
       .input("practiceHours", sql.Int, practiceHours || 0)
       .input("examHours", sql.Int, examHours || 0)
+      .input("category", sql.NVarChar, categoryResult.value)
       .query<{ SubjectId: number }>(`
-        INSERT INTO Subjects (SubjectName, SubjectCode, FacultyId, MajorId, Credits, TheoryHours, PracticeHours, ExamHours)
+        INSERT INTO Subjects (SubjectName, SubjectCode, FacultyId, MajorId, Credits, TheoryHours, PracticeHours, ExamHours, Category)
         OUTPUT INSERTED.SubjectId
-        VALUES (@subjectName, @subjectCode, @facultyId, @majorId, @credits, @theoryHours, @practiceHours, @examHours)
+        VALUES (@subjectName, @subjectCode, @facultyId, @majorId, @credits, @theoryHours, @practiceHours, @examHours, @category)
       `);
     res.status(201).json({ subjectId: result.recordset[0].SubjectId });
   } catch (err) {
@@ -126,10 +144,15 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
 export async function update(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   try {
     const { id } = req.params;
-    const { subjectName, subjectCode, facultyId, majorId, credits, theoryHours, practiceHours, examHours, isActive } =
+    const { subjectName, subjectCode, facultyId, majorId, credits, theoryHours, practiceHours, examHours, category, isActive } =
       req.body as SubjectBody;
     if (!subjectCode || !subjectCode.trim()) {
       res.status(400).json({ message: "Thiếu mã môn — mã môn bắt buộc và phải duy nhất" });
+      return;
+    }
+    const categoryResult = normalizeCategory(category);
+    if (!categoryResult.valid) {
+      res.status(400).json({ message: "Phân loại không hợp lệ" });
       return;
     }
 
@@ -156,11 +179,12 @@ export async function update(req: AuthRequest, res: Response, next: NextFunction
       .input("theoryHours", sql.Int, theoryHours || 0)
       .input("practiceHours", sql.Int, practiceHours || 0)
       .input("examHours", sql.Int, examHours || 0)
+      .input("category", sql.NVarChar, categoryResult.value)
       .input("isActive", sql.Bit, isActive ?? true)
       .query(`
         UPDATE Subjects SET SubjectName=@subjectName, SubjectCode=@subjectCode, FacultyId=@facultyId,
           MajorId=@majorId, Credits=@credits, TheoryHours=@theoryHours, PracticeHours=@practiceHours,
-          ExamHours=@examHours, IsActive=@isActive
+          ExamHours=@examHours, Category=@category, IsActive=@isActive
         WHERE SubjectId = @id
       `);
     res.json({ message: "Đã cập nhật" });
@@ -226,6 +250,11 @@ export async function bulkCreate(req: AuthRequest, res: Response, next: NextFunc
           throw new Error(`Mã môn "${row.subjectCode}" đã tồn tại`);
         }
 
+        // Frontend đã validate/chuẩn hóa category trước khi gửi (parseCategory), nhưng backend vẫn tự
+        // kiểm tra lại — đây là nguồn duy nhất hiện ghi Category nên không thể chỉ tin tưởng frontend.
+        const categoryResult = normalizeCategory(row.category);
+        if (!categoryResult.valid) throw new Error(`Phân loại "${row.category}" không hợp lệ`);
+
         request
           .input("subjectCode", sql.NVarChar, row.subjectCode.trim())
           .input("subjectName", sql.NVarChar, row.subjectName)
@@ -235,7 +264,7 @@ export async function bulkCreate(req: AuthRequest, res: Response, next: NextFunc
           .input("theoryHours", sql.Int, row.theoryHours || 0)
           .input("practiceHours", sql.Int, row.practiceHours || 0)
           .input("examHours", sql.Int, row.examHours || 0)
-          .input("category", sql.NVarChar, row.category || null);
+          .input("category", sql.NVarChar, categoryResult.value);
         await request.query(`
           INSERT INTO Subjects (SubjectCode, SubjectName, FacultyId, MajorId, Credits, TheoryHours, PracticeHours, ExamHours, Category)
           VALUES (@subjectCode, @subjectName, @facultyId, @majorId, @credits, @theoryHours, @practiceHours, @examHours, @category)

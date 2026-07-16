@@ -61,6 +61,8 @@ export interface Subject {
   FacultyName: string | null;
   MajorId: number | null;
   MajorName: string | null;
+  // Phân loại môn theo khối kiến thức: DaiCuong | CoSoNganh | ChuyenNganh | null (chưa phân loại).
+  Category: string | null;
   Credits: number | null;
   TheoryHours: number;
   PracticeHours: number;

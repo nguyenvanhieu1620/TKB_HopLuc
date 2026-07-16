@@ -70,7 +70,10 @@ CREATE TABLE Subjects (
     SubjectName   NVARCHAR(150)   NOT NULL,
     FacultyId     INT             NULL,               -- khoa phụ trách giảng dạy
     MajorId       INT             NULL,               -- ngành sở hữu môn này (Việc AQ)
-    Category      NVARCHAR(20)    NULL,               -- phân loại môn: LyThuyet | ThucHanh | LamSang...
+    -- Phân loại môn theo khối kiến thức: DaiCuong | CoSoNganh | ChuyenNganh | NULL (chưa phân loại) —
+    -- dùng để ưu tiên thứ tự xử lý môn khi tự động xếp lịch (Đại cương xếp trước, rồi Cơ sở ngành, rồi
+    -- Chuyên ngành).
+    Category      NVARCHAR(20)    NULL,
     Credits       INT             NULL,               -- số tín chỉ (giá trị chuẩn/mặc định)
     TheoryHours   INT             NOT NULL DEFAULT 0, -- giờ lý thuyết
     PracticeHours INT             NOT NULL DEFAULT 0, -- giờ thực hành
@@ -78,7 +81,8 @@ CREATE TABLE Subjects (
     IsActive      BIT             NOT NULL DEFAULT 1,
     CreatedAt     DATETIME2       NOT NULL DEFAULT SYSDATETIME(),
     CONSTRAINT FK_Subjects_Faculty FOREIGN KEY (FacultyId) REFERENCES Faculties(FacultyId),
-    CONSTRAINT FK_Subjects_Major FOREIGN KEY (MajorId) REFERENCES Majors(MajorId)
+    CONSTRAINT FK_Subjects_Major FOREIGN KEY (MajorId) REFERENCES Majors(MajorId),
+    CONSTRAINT CK_Subjects_Category CHECK (Category IN (N'DaiCuong', N'CoSoNganh', N'ChuyenNganh') OR Category IS NULL)
 );
 GO
 
