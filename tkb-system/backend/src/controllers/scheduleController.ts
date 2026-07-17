@@ -2,7 +2,7 @@ import { Response, NextFunction } from "express";
 import { sql, getPool } from "../config/db";
 import { checkScheduleConflict, findHoliday, checkExamPeriodWarning } from "../utils/conflictCheck";
 import { checkTrainingModeRule, getClassTrainingMode } from "../utils/trainingModeCheck";
-import { checkRoomCapacity, checkSessionLength, checkDailyHoursLimit, checkTeacherWeeklyHours, checkTeacherYearlyHours, getClassSize, getTotalPeriodsForSubject, getPeriodTimelineForSubject } from "../utils/policyRules";
+import { checkRoomCapacity, checkSessionLength, checkDailyHoursLimit, checkTeacherWeeklyHours, checkTeacherYearlyHours, getClassSize, getTotalPeriodsForSubject, getPeriodTimelineForSubject, getRoomInfo, getRequiredGroupCount } from "../utils/policyRules";
 import { writeAuditLog } from "../utils/auditLog";
 import { notifyTeachers } from "../utils/notify";
 import { AuthRequest } from "../types";
@@ -20,6 +20,20 @@ async function getClassSubjectNames(classId: number, subjectId: number): Promise
   const row = result.recordset[0];
   if (!row || !row.ClassName || !row.SubjectName) return null;
   return { className: row.ClassName, subjectName: row.SubjectName };
+}
+
+// Việc BH: tham số đúng cho checkRoomCapacity của 1 dòng Schedule — dòng ĐÃ tách nhóm (groupLabel
+// khác NULL) phải so sức chứa THẬT của phòng với sĩ số RIÊNG của nhóm đó (Math.ceil(sĩ số cả lớp /
+// số nhóm theo bảng mốc getRequiredGroupCount) — không phải cả lớp; dòng học chung cả lớp
+// (groupLabel NULL, vd Lý thuyết) giữ nguyên so với mốc chính sách như trước, không đổi gì.
+async function capacityCheckParamsFor(
+  roomId: number, classSize: number, groupLabel: string | null
+): Promise<{ roomId: number; totalStudents: number; isGroupSplit: boolean }> {
+  if (!groupLabel) return { roomId, totalStudents: classSize, isGroupSplit: false };
+  const room = await getRoomInfo(roomId);
+  const sessionTypeBracket = room?.RoomType === "LamSang" ? "Clinical" : "Practice";
+  const totalStudents = Math.ceil(classSize / getRequiredGroupCount(classSize, sessionTypeBracket));
+  return { roomId, totalStudents, isGroupSplit: true };
 }
 
 function conflictMessage(conflict: { roomUnavailable: unknown[]; teacherUnavailable: unknown[] }): string {
@@ -359,7 +373,18 @@ export async function update(req: AuthRequest, res: Response, next: NextFunction
     }
 
     const classSize = await getClassSize(classId as number);
-    const capacityCheck = await checkRoomCapacity({ roomId: roomId as number, totalStudents: classSize });
+    // Việc BH: buổi đang sửa có thể là 1 dòng ĐÃ tách nhóm (GroupLabel khác NULL, cột này không có
+    // trong ScheduleBody nên không đổi được khi Sửa) — tra lại từ chính dòng đang sửa để kiểm tra sức
+    // chứa đúng theo sĩ số RIÊNG của nhóm đó, không phải cả lớp.
+    const existingGroupResult = await (await getPool())
+      .request()
+      .input("id", sql.Int, id)
+      .query<{ GroupLabel: string | null }>(`SELECT GroupLabel FROM Schedule WHERE ScheduleId = @id`);
+    const existingGroupLabel = existingGroupResult.recordset[0]?.GroupLabel ?? null;
+
+    const capacityCheck = await checkRoomCapacity(
+      await capacityCheckParamsFor(roomId as number, classSize, existingGroupLabel)
+    );
     if (capacityCheck.violated) {
       res.status(400).json({ message: capacityCheck.message });
       return;
@@ -810,7 +835,11 @@ export async function copyWeek(req: AuthRequest, res: Response, next: NextFuncti
         continue;
       }
 
-      const capacityCheck = await checkRoomCapacity({ roomId: row.RoomId, totalStudents: classSize });
+      // Việc BH: dòng nguồn ĐÃ tách nhóm (row.GroupLabel khác NULL) — kiểm tra sức chứa đúng theo sĩ
+      // số RIÊNG của nhóm đó, không phải cả lớp.
+      const capacityCheck = await checkRoomCapacity(
+        await capacityCheckParamsFor(row.RoomId, classSize, row.GroupLabel)
+      );
       if (capacityCheck.violated) {
         skippedConflicts.push(`${row.StartTime}-${row.EndTime} ngày ${newDate}: ${capacityCheck.message}`);
         continue;

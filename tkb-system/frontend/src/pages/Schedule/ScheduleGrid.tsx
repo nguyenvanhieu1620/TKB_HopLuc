@@ -6,6 +6,7 @@ import { AxiosError } from "axios";
 import { addDays, addMinutesToTime, colorForId, diffMinutesBetweenTimes, findTodayWeekIndex, getISOWeek, getISOWeekYear, getWeeksInSemester, mondayOfISOWeek, parseDateKey, startOfWeek, toDateKey, WEEKDAY_LABELS } from "../../../utils/calendar";
 import { buildWorkbook, downloadWorkbook } from "../../../utils/excel";
 import { subjectLabel } from "../../../utils/text";
+import { getRequiredGroupCount } from "../../../utils/scheduling";
 
 interface ScheduleForm {
   semesterId: string;
@@ -478,10 +479,21 @@ export default function ScheduleGrid() {
   );
 
   // Gợi ý tách nhóm: sĩ số lớp vượt giới hạn/ca của loại phòng đang chọn ở form xếp lịch thường.
+  // Việc BH: Thực hành/Lâm sàng dùng bảng mốc cố định getRequiredGroupCount (không còn so trực tiếp
+  // với policy MaxStudentsPerPracticeGroup/MaxStudentsPerClinicalGroup) — hint chỉ hiện khi bảng mốc
+  // yêu cầu >1 nhóm. Lý thuyết không thuộc bảng mốc này, giữ nguyên so với policy như trước.
   const capacityHint = useMemo(() => {
     if (!selectedFormClass || !form.roomId) return null;
     const room = rooms.find((r) => String(r.RoomId) === form.roomId);
     if (!room) return null;
+
+    if (room.RoomType === "ThucHanh" || room.RoomType === "Labo" || room.RoomType === "LamSang") {
+      const sessionTypeBracket = room.RoomType === "LamSang" ? "Clinical" : "Practice";
+      const groupsNeeded = getRequiredGroupCount(selectedFormClass.ClassSize, sessionTypeBracket);
+      if (groupsNeeded <= 1) return null;
+      return `Lớp ${selectedFormClass.ClassName} có ${selectedFormClass.ClassSize} người — nên tách thành ${groupsNeeded} nhóm cho loại phòng này (bảng mốc sĩ số/nhóm), dùng "Xếp theo nhóm" để tách nhóm học song song.`;
+    }
+
     const policyKey = CAPACITY_POLICY_BY_ROOM_TYPE[room.RoomType];
     if (!policyKey || !(policyKey in policies)) return null;
     const max = policies[policyKey];

@@ -5,7 +5,7 @@ import { getPolicyValue } from "./policyConfig";
 import {
   getPeriodMinutes, getTotalPeriodsForSubject, getPeriodTimelineForSubject, getWeeksInSemester,
   checkRoomCapacity, checkSessionLength, checkDailyHoursLimit, checkTeacherWeeklyHours, checkTeacherYearlyHours,
-  CAPACITY_POLICY_BY_ROOM_TYPE, ROOM_TYPES_BY_CATEGORY, roomCategoryFor,
+  CAPACITY_POLICY_BY_ROOM_TYPE, ROOM_TYPES_BY_CATEGORY, roomCategoryFor, getRequiredGroupCount,
 } from "./policyRules";
 import { checkScheduleConflict, findHoliday } from "./conflictCheck";
 import { checkTrainingModeRule, getClassTrainingMode } from "./trainingModeCheck";
@@ -207,7 +207,12 @@ async function tryPlaceSingleBlock(ctx: RunContext, params: PlaceBlockParams): P
           });
           if (conflict.hasConflict) continue;
 
-          const capacityCheck = await checkRoomCapacity({ roomId, totalStudents: params.totalStudents });
+          // Việc BH: params.groupLabel chỉ có giá trị khi block này đến từ tryPlaceGroupSplitBlock —
+          // lúc đó params.totalStudents ĐÃ là sĩ số riêng của 1 nhóm (perGroupSize tính sẵn ở đó), so
+          // với sức chứa THẬT của phòng thay vì mốc chính sách.
+          const capacityCheck = await checkRoomCapacity({
+            roomId, totalStudents: params.totalStudents, isGroupSplit: !!params.groupLabel,
+          });
           if (capacityCheck.violated) continue;
 
           const scheduleId = await insertSession(ctx, {
@@ -293,9 +298,18 @@ async function processSubjectPart(
   const periodMinutes = await getPeriodMinutes(roomCategory);
   const maxPerSessionKey = sessionType === "Theory" ? "MaxTheoryHoursPerSession" : "MaxPracticeHoursPerSession";
   const maxPerSession = await getPolicyValue(maxPerSessionKey);
-  const capacityPolicyKey = CAPACITY_POLICY_BY_ROOM_TYPE[roomCategory];
-  const capacityLimit = await getPolicyValue(capacityPolicyKey);
-  const groupCount = classSize > capacityLimit ? Math.ceil(classSize / capacityLimit) : 1;
+  // Việc BH: số nhóm cần tách cho Thực hành/Lâm sàng dùng bảng mốc cố định getRequiredGroupCount
+  // (không còn chia trần theo policy MaxStudentsPerPracticeGroup/MaxStudentsPerClinicalGroup) — Lý
+  // thuyết không thuộc phạm vi bảng mốc này, giữ nguyên cách tính cũ theo MaxStudentsPerTheoryRoom.
+  let groupCount: number;
+  if (roomCategory === "ThucHanh") {
+    groupCount = getRequiredGroupCount(classSize, "Practice");
+  } else if (roomCategory === "LamSang") {
+    groupCount = getRequiredGroupCount(classSize, "Clinical");
+  } else {
+    const capacityLimit = await getPolicyValue(CAPACITY_POLICY_BY_ROOM_TYPE[roomCategory]);
+    groupCount = classSize > capacityLimit ? Math.ceil(classSize / capacityLimit) : 1;
+  }
 
   let scheduled = 0;
   let left = wholeRemaining;
