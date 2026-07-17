@@ -1,7 +1,8 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import axiosClient from "../../api/axiosClient";
 import { useAuth } from "../../context/AuthContext";
-import { ScheduleItem, ScheduleDetail, SchedulePeriodProgress, Semester, SchoolClass, Subject, Room, Teacher, Session, SchedulingPolicyItem, ApiErrorResponse, CopyWeekResult, CurriculumItem, Cohort, AutoScheduleReport } from "../../types";
+import { ScheduleItem, ScheduleDetail, SchedulePeriodProgress, Semester, SchoolClass, Subject, Room, Teacher, Session, SchedulingPolicyItem, ApiErrorResponse, CopyWeekResult, CurriculumItem, Cohort, AutoScheduleReport, ExamItem } from "../../types";
 import { AxiosError } from "axios";
 import { addDays, addMinutesToTime, colorForId, diffMinutesBetweenTimes, findTodayWeekIndex, getISOWeek, getISOWeekYear, getWeeksInSemester, mondayOfISOWeek, parseDateKey, startOfWeek, toDateKey, WEEKDAY_LABELS } from "../../../utils/calendar";
 import { buildWorkbook, downloadWorkbook } from "../../../utils/excel";
@@ -220,19 +221,37 @@ function ClassScheduleModeHint({ cls }: { cls: SchoolClass }) {
   );
 }
 
-// Gộp các buổi cùng MergedSessionId (ghép lớp) thành 1 nhóm hiển thị chung;
-// các buổi không ghép lớp giữ nguyên từng nhóm riêng lẻ.
-interface EventGroup { key: string; events: ScheduleItem[]; isMerged: boolean }
+// Việc BI: gộp Lịch thi (Exams) chung 1 khung lịch với Thời khóa biểu (Schedule) — CalendarEvent là
+// union phân biệt bằng eventType, giữ nguyên tên trường gốc của từng loại (ScheduleItem/ExamItem)
+// để phần lớn code hiện có (StartTime/EndTime/ClassId/SubjectName/RoomName...) dùng chung được ngay,
+// chỉ cần rẽ nhánh theo eventType ở những chỗ thật sự khác nhau (ngày: ScheduleDate vs ExamDate; nội
+// dung thẻ hiển thị).
+export type CalendarEvent = (ScheduleItem & { eventType: "schedule" }) | (ExamItem & { eventType: "exam" });
 
-function groupMergedEvents(events: ScheduleItem[]): EventGroup[] {
+function eventDateKey(ev: CalendarEvent): string {
+  return (ev.eventType === "exam" ? ev.ExamDate : ev.ScheduleDate).slice(0, 10);
+}
+
+const EXAM_TYPE_LABELS: Record<string, string> = {
+  TuLuan: "Tự luận", TracNghiem: "Trắc nghiệm", VanDap: "Vấn đáp", ThucHanh: "Thực hành",
+};
+
+// Gộp các buổi cùng MergedSessionId (ghép lớp) thành 1 nhóm hiển thị chung;
+// các buổi không ghép lớp giữ nguyên từng nhóm riêng lẻ. Ca thi không bao giờ ghép (không có
+// MergedSessionId), mỗi ca thi luôn là 1 nhóm riêng.
+interface EventGroup { key: string; events: CalendarEvent[]; isMerged: boolean }
+
+function groupMergedEvents(events: CalendarEvent[]): EventGroup[] {
   const groups: EventGroup[] = [];
   const mergedSeen = new Set<number>();
   for (const ev of events) {
-    if (ev.MergedSessionId != null) {
+    if (ev.eventType === "schedule" && ev.MergedSessionId != null) {
       if (mergedSeen.has(ev.MergedSessionId)) continue;
       mergedSeen.add(ev.MergedSessionId);
-      const siblings = events.filter((e) => e.MergedSessionId === ev.MergedSessionId);
+      const siblings = events.filter((e) => e.eventType === "schedule" && e.MergedSessionId === ev.MergedSessionId);
       groups.push({ key: `merged-${ev.MergedSessionId}`, events: siblings, isMerged: true });
+    } else if (ev.eventType === "exam") {
+      groups.push({ key: `exam-${ev.ExamId}`, events: [ev], isMerged: false });
     } else {
       groups.push({ key: `single-${ev.ScheduleId}`, events: [ev], isMerged: false });
     }
@@ -242,7 +261,7 @@ function groupMergedEvents(events: ScheduleItem[]): EventGroup[] {
 
 // Nội dung bên trong 1 thẻ buổi học — dùng chung cho cả chế độ "Theo lớp" và "Tất cả các lớp" để
 // 2 chế độ luôn hiện ĐẦY ĐỦ cùng 1 loại thông tin (Môn/Lớp/Phòng/GV/tiến độ số tiết), không lệch nhau.
-function EventCardContent({ ev, g, progress }: { ev: ScheduleItem; g: EventGroup; progress?: SchedulePeriodProgress }) {
+function EventCardContent({ ev, g, progress }: { ev: ScheduleItem & { eventType: "schedule" }; g: EventGroup; progress?: SchedulePeriodProgress }) {
   const classNames = g.events.map((e) => e.ClassName).join(", ");
   return (
     <>
@@ -267,9 +286,31 @@ function EventCardContent({ ev, g, progress }: { ev: ScheduleItem; g: EventGroup
   );
 }
 
+// Việc BI: thẻ CA THI — cố tình KHÔNG dùng colorForId(SubjectId) như thẻ buổi học thường, viền/nền
+// màu đỏ cố định (class calendar-event-card-exam) để phân biệt rõ dù nhìn lướt qua. Bấm vào thẻ điều
+// hướng sang trang Lịch thi để xem/sửa/xóa đầy đủ — Việc BI chỉ hiển thị THAM KHẢO tại đây.
+function ExamCardContent({ exam }: { exam: ExamItem }) {
+  return (
+    <>
+      <div className="calendar-event-title">
+        <span className="calendar-event-exam-badge">THI</span>{exam.SubjectName}
+      </div>
+      <div className="calendar-event-sub">{exam.ClassName} · {exam.RoomName}</div>
+      {exam.Proctors && <div className="calendar-event-sub">Giám thị: {exam.Proctors}</div>}
+      <div className="calendar-event-sub">{EXAM_TYPE_LABELS[exam.ExamType] || exam.ExamType}</div>
+    </>
+  );
+}
+
 export default function ScheduleGrid() {
   const { isAdmin } = useAuth();
+  const navigate = useNavigate();
   const [rows, setRows] = useState<ScheduleItem[]>([]);
+  // Việc BI: Lịch thi (Exams) nạp riêng theo đúng phạm vi đang xem (Theo kỳ: semesterId/classId;
+  // Tất cả các lớp: cohortId + khoảng ngày) rồi gộp cùng rows/allClassesRows vào eventsByDate/
+  // allClassesGrid khi hiển thị — không thay thế trang Lịch thi (ExamList.tsx) vẫn dùng để quản lý.
+  const [examRows, setExamRows] = useState<ExamItem[]>([]);
+  const [allClassesExamRows, setAllClassesExamRows] = useState<ExamItem[]>([]);
   // Việc AU (fix): key theo ScheduleId (không phải SubjectId) — mỗi buổi có tiến độ lũy kế RIÊNG
   // theo đúng thứ tự thời gian của nó, không dùng chung 1 tổng cho mọi buổi cùng môn.
   const [periodProgress, setPeriodProgress] = useState<Record<number, SchedulePeriodProgress>>({});
@@ -530,8 +571,14 @@ export default function ScheduleGrid() {
     const params: Record<string, string> = {};
     if (filters.semesterId) params.semesterId = filters.semesterId;
     if (filters.classId) params.classId = filters.classId;
-    const res = await axiosClient.get<ScheduleItem[]>("/schedule", { params });
+    // Việc BI: nạp thêm Lịch thi cùng phạm vi (semesterId/classId) để gộp hiển thị trên cùng khung
+    // lịch — chỉ tham khảo, không thay thế trang Lịch thi (ExamList.tsx).
+    const [res, examRes] = await Promise.all([
+      axiosClient.get<ScheduleItem[]>("/schedule", { params }),
+      axiosClient.get<ExamItem[]>("/exams", { params }),
+    ]);
     setRows(res.data);
+    setExamRows(examRes.data);
 
     // Việc AU: tiến độ số tiết lũy kế RIÊNG cho từng buổi, hiện ngay trên từng thẻ buổi học —
     // nạp lại cùng lúc với lịch để luôn khớp dữ liệu mới nhất sau khi thêm/sửa/xóa buổi.
@@ -552,33 +599,42 @@ export default function ScheduleGrid() {
   useEffect(() => { loadSemestersFor(mergeForm.classIds[0] || "").then(setMergeSemesters); }, [mergeForm.classIds[0]]);
   useEffect(() => { loadSemestersFor(groupForm.classId).then(setGroupSemesters); }, [groupForm.classId]);
 
+  // Việc BI: gộp Schedule + Exams vào chung 1 chỉ mục theo ngày — mỗi phần tử gắn eventType để phần
+  // render biết xử lý khác nhau (thẻ ca thi hiển thị khác hẳn thẻ buổi học thường).
   const eventsByDate = useMemo(() => {
-    const map: Record<string, ScheduleItem[]> = {};
+    const map: Record<string, CalendarEvent[]> = {};
     for (const r of rows) {
-      const key = r.ScheduleDate?.slice(0, 10);
+      const ev: CalendarEvent = { ...r, eventType: "schedule" };
+      const key = eventDateKey(ev);
       if (!map[key]) map[key] = [];
-      map[key].push(r);
+      map[key].push(ev);
+    }
+    for (const r of examRows) {
+      const ev: CalendarEvent = { ...r, eventType: "exam" };
+      const key = eventDateKey(ev);
+      if (!map[key]) map[key] = [];
+      map[key].push(ev);
     }
     for (const key of Object.keys(map)) {
       map[key].sort((a, b) => a.StartTime.localeCompare(b.StartTime));
     }
     return map;
-  }, [rows]);
+  }, [rows, examRows]);
 
   const weekDays = useMemo(() => {
     if (!currentWeek) return [];
     return Array.from({ length: 7 }, (_, i) => addDays(currentWeek.start, i));
   }, [currentWeek]);
 
-  interface DayGrid { bySession: Map<number, ScheduleItem[]>; leftover: ScheduleItem[] }
+  interface DayGrid { bySession: Map<number, CalendarEvent[]>; leftover: CalendarEvent[] }
 
   const weekDayGrids = useMemo(() => {
     const map: Record<string, DayGrid> = {};
     for (const day of weekDays) {
       const key = toDateKey(day);
       const dayEvents = eventsByDate[key] || [];
-      const bySession = new Map<number, ScheduleItem[]>();
-      const leftover: ScheduleItem[] = [];
+      const bySession = new Map<number, CalendarEvent[]>();
+      const leftover: CalendarEvent[] = [];
       for (const ev of dayEvents) {
         const session = sessions.find((s) => s.StartTime < ev.EndTime && s.EndTime > ev.StartTime);
         if (!session) {
@@ -612,27 +668,36 @@ export default function ScheduleGrid() {
   async function loadAllClassesSchedule() {
     if (!allClassesCohortId) {
       setAllClassesRows([]);
+      setAllClassesExamRows([]);
       setAllClassesPeriodProgress({});
       return;
     }
     const from = toDateKey(allClassesWeekStart);
     const to = toDateKey(addDays(allClassesWeekStart, 6));
-    const [scheduleRes, progressRes] = await Promise.all([
+    // Việc BI: nạp thêm Lịch thi cùng cohortId + khoảng ngày (giống hệt cách gọi cho Schedule) để
+    // gộp hiển thị ở chế độ "Tất cả các lớp".
+    const [scheduleRes, examRes, progressRes] = await Promise.all([
       axiosClient.get<ScheduleItem[]>("/schedule", { params: { cohortId: allClassesCohortId, from, to } }),
+      axiosClient.get<ExamItem[]>("/exams", { params: { cohortId: allClassesCohortId, from, to } }),
       axiosClient.get<SchedulePeriodProgress[]>("/schedule/period-progress", { params: { cohortId: allClassesCohortId } }),
     ]);
     setAllClassesRows(scheduleRes.data);
+    setAllClassesExamRows(examRes.data);
     setAllClassesPeriodProgress(Object.fromEntries(progressRes.data.map((p) => [p.scheduleId, p])));
   }
   useEffect(() => {
     if (viewMode === "allClasses") loadAllClassesSchedule();
   }, [viewMode, allClassesCohortId, allClassesWeekStart]);
 
-  // classId -> ngày (YYYY-MM-DD) -> SessionId -> các buổi khớp đúng ngày+ca đó.
+  // classId -> ngày (YYYY-MM-DD) -> SessionId -> các buổi/ca thi khớp đúng ngày+ca đó.
   const allClassesGrid = useMemo(() => {
-    const map = new Map<number, Map<string, Map<number, ScheduleItem[]>>>();
-    for (const ev of allClassesRows) {
-      const dateKey = ev.ScheduleDate.slice(0, 10);
+    const map = new Map<number, Map<string, Map<number, CalendarEvent[]>>>();
+    const allEvents: CalendarEvent[] = [
+      ...allClassesRows.map((r): CalendarEvent => ({ ...r, eventType: "schedule" })),
+      ...allClassesExamRows.map((r): CalendarEvent => ({ ...r, eventType: "exam" })),
+    ];
+    for (const ev of allEvents) {
+      const dateKey = eventDateKey(ev);
       const session = sessions.find((s) => s.StartTime < ev.EndTime && s.EndTime > ev.StartTime);
       if (!session) continue;
       if (!map.has(ev.ClassId)) map.set(ev.ClassId, new Map());
@@ -643,19 +708,20 @@ export default function ScheduleGrid() {
       bySession.get(session.SessionId)!.push(ev);
     }
     return map;
-  }, [allClassesRows, sessions]);
+  }, [allClassesRows, allClassesExamRows, sessions]);
 
   // Ẩn bớt Thứ không có buổi nào của các lớp đang hiện (thường là Chủ nhật) — nhưng nếu cả tuần
   // trống trơn thì vẫn hiện đủ 7 ngày để không làm bảng biến mất hoàn toàn, gây hiểu lầm là lỗi.
   const allClassesVisibleDays = useMemo(() => {
-    if (allClassesRows.length === 0) return allClassesDays;
+    if (allClassesRows.length === 0 && allClassesExamRows.length === 0) return allClassesDays;
     const visibleClassIds = new Set(visibleAllClasses.map((c) => c.ClassId));
     const filtered = allClassesDays.filter((day) => {
       const key = toDateKey(day);
-      return allClassesRows.some((ev) => visibleClassIds.has(ev.ClassId) && ev.ScheduleDate.slice(0, 10) === key);
+      return allClassesRows.some((ev) => visibleClassIds.has(ev.ClassId) && ev.ScheduleDate.slice(0, 10) === key)
+        || allClassesExamRows.some((ev) => visibleClassIds.has(ev.ClassId) && ev.ExamDate.slice(0, 10) === key);
     });
     return filtered.length > 0 ? filtered : allClassesDays;
-  }, [allClassesDays, allClassesRows, visibleAllClasses]);
+  }, [allClassesDays, allClassesRows, allClassesExamRows, visibleAllClasses]);
 
   // Nhảy thẳng tới 1 tuần bất kỳ qua chọn Năm + Tuần (ISO) — bấm lùi/tới từng tuần vẫn còn để
   // tinh chỉnh, nhưng chọn thẳng nhanh hơn nhiều khi cần nhảy xa (vd sang kỳ/năm học khác).
@@ -1562,8 +1628,23 @@ export default function ScheduleGrid() {
                           <div className="calendar-grid-event-inner">
                             {groups.map((g) => {
                               const ev = g.events[0];
+                              // Việc BI: ca thi hiển thị thẻ RIÊNG (viền/nền đỏ cố định, không dùng
+                              // colorForId theo môn) — bấm vào điều hướng sang trang Lịch thi để
+                              // xem/sửa/xóa đầy đủ, không sửa trực tiếp tại đây.
+                              if (ev.eventType === "exam") {
+                                return (
+                                  <div
+                                    key={g.key}
+                                    className="calendar-event-card calendar-event-card-exam"
+                                    onClick={() => navigate("/exams")}
+                                    title="Bấm để mở trang Lịch thi"
+                                  >
+                                    <ExamCardContent exam={ev} />
+                                  </div>
+                                );
+                              }
                               const color = colorForId(ev.SubjectId);
-                              const scheduleIds = g.events.map((e) => e.ScheduleId);
+                              const scheduleIds = g.events.map((e) => (e as ScheduleItem).ScheduleId);
                               return (
                                 <div key={g.key} className="calendar-event-card" style={{ background: color.bg, color: color.text }}>
                                   <EventCardContent ev={ev} g={g} progress={periodProgress[ev.ScheduleId]} />
@@ -1590,7 +1671,7 @@ export default function ScheduleGrid() {
             </table>
           </div>
 
-          {weekDays.some((day) => (weekDayGrids[toDateKey(day)]?.leftover.length ?? 0) > 0) && (
+          {weekDays.some((day) => (weekDayGrids[toDateKey(day)]?.leftover.filter((ev) => ev.eventType === "schedule").length ?? 0) > 0) && (
             <div className="mt-4">
               <p className="hint mb-2">
                 ⚠ Các buổi học sau có giờ không khớp với Ca học nào (có thể do nhập giờ tùy chỉnh trước đây):
@@ -1600,16 +1681,18 @@ export default function ScheduleGrid() {
                 <tbody>
                   {weekDays.flatMap((day) => {
                     const key = toDateKey(day);
-                    return (weekDayGrids[key]?.leftover || []).map((ev) => (
-                      <tr key={ev.ScheduleId}>
-                        <td>{key}</td>
-                        <td>{ev.StartTime}–{ev.EndTime}</td>
-                        <td>{ev.ClassName}</td>
-                        <td>{ev.SubjectName}</td>
-                        <td>{ev.RoomName}</td>
-                        {isAdmin && <td><button onClick={() => handleDelete(ev.ScheduleId)}>Xóa</button></td>}
-                      </tr>
-                    ));
+                    return (weekDayGrids[key]?.leftover || [])
+                      .filter((ev): ev is ScheduleItem & { eventType: "schedule" } => ev.eventType === "schedule")
+                      .map((ev) => (
+                        <tr key={ev.ScheduleId}>
+                          <td>{key}</td>
+                          <td>{ev.StartTime}–{ev.EndTime}</td>
+                          <td>{ev.ClassName}</td>
+                          <td>{ev.SubjectName}</td>
+                          <td>{ev.RoomName}</td>
+                          {isAdmin && <td><button onClick={() => handleDelete(ev.ScheduleId)}>Xóa</button></td>}
+                        </tr>
+                      ));
                   })}
                 </tbody>
               </table>
@@ -1702,6 +1785,18 @@ export default function ScheduleGrid() {
                                 <div className="calendar-grid-event-inner">
                                   {groups.map((g) => {
                                     const ev = g.events[0];
+                                    if (ev.eventType === "exam") {
+                                      return (
+                                        <div
+                                          key={g.key}
+                                          className="calendar-event-card calendar-event-card-exam"
+                                          onClick={() => navigate("/exams")}
+                                          title="Bấm để mở trang Lịch thi"
+                                        >
+                                          <ExamCardContent exam={ev} />
+                                        </div>
+                                      );
+                                    }
                                     const color = colorForId(ev.SubjectId);
                                     return (
                                       <div key={g.key} className="calendar-event-card" style={{ background: color.bg, color: color.text }}>

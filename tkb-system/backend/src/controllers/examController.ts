@@ -47,15 +47,21 @@ interface ExamBody {
   note?: string;
 }
 
+// Việc BI: thêm cohortId/from/to (khớp đúng cách GET /schedule đã hỗ trợ) để ScheduleGrid.tsx gộp
+// hiển thị Lịch thi cùng Thời khóa biểu ở cả 2 chế độ xem — "Theo kỳ" (semesterId/classId có sẵn từ
+// trước) và "Tất cả các lớp" (cần thêm cohortId + khoảng ngày).
 export async function list(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { semesterId, classId, teacherId } = req.query as Record<string, string | undefined>;
+    const { semesterId, classId, cohortId, teacherId, from, to } = req.query as Record<string, string | undefined>;
     const pool = await getPool();
     const request = pool.request();
 
     let where = "WHERE 1=1";
     if (semesterId) { request.input("semesterId", sql.Int, semesterId); where += " AND e.SemesterId=@semesterId"; }
     if (classId) { request.input("classId", sql.Int, classId); where += " AND e.ClassId=@classId"; }
+    if (cohortId) { request.input("cohortId", sql.Int, cohortId); where += " AND c.CohortId=@cohortId"; }
+    if (from) { request.input("from", sql.Date, from); where += " AND e.ExamDate>=@from"; }
+    if (to) { request.input("to", sql.Date, to); where += " AND e.ExamDate<=@to"; }
     if (teacherId) {
       request.input("teacherId", sql.Int, teacherId);
       where += " AND EXISTS (SELECT 1 FROM ExamProctors ep WHERE ep.ExamId=e.ExamId AND ep.TeacherId=@teacherId)";

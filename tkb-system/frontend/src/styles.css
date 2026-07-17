@@ -108,4 +108,13 @@
   .calendar-event-actions { @apply mt-auto flex gap-1; }
   .calendar-event-edit { @apply bg-white/60 text-[#2f5f8b] text-[11px] px-1.5 py-0.5 rounded; }
   .calendar-event-delete { @apply bg-white/60 text-[#a33] text-[11px] px-1.5 py-0.5 rounded; }
+
+  /* Việc BI: thẻ ca thi — nền/viền màu cố định (đỏ/cam), KHÔNG dùng colorForId(SubjectId) như thẻ
+     buổi học thường, để phân biệt rõ ràng dù nhìn lướt qua. */
+  .calendar-event-card-exam {
+    @apply bg-red-50 border-2 border-red-400 text-red-900 cursor-pointer;
+  }
+  .calendar-event-exam-badge {
+    @apply inline-block bg-red-500 text-white text-[10px] font-bold px-1 py-0.5 rounded mr-1 align-middle;
+  }
 }
