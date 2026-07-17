@@ -126,12 +126,17 @@ interface PlaceBlockParams {
   groupLabel?: string | null;
 }
 
-// 1 buổi (1 Ngày + 1 Ca cụ thể) của 1 Lớp chỉ dành cho ĐÚNG 1 MÔN — không chia nhỏ nhét nhiều môn
-// khác nhau vào cùng buổi (kể cả khi chưa dùng hết giới hạn tiết tối đa/buổi). Kiểm tra CẢ Ca (không
-// chỉ đúng khoảng phút của block đang thử) đã có Schedule của Lớp này thuộc MÔN KHÁC hay chưa — có
-// thì bỏ qua slot này. Không áp dụng cho các dòng CÙNG môn (vd Tách nhóm/Ghép lớp tự tạo nhiều dòng
-// cho cùng 1 môn ở cùng slot — đó là cơ chế khác, không phải "môn khác chen vào").
-async function isSlotTakenByOtherSubject(classId: number, date: string, session: SessionRow, subjectId: number): Promise<boolean> {
+// Việc BM (vấn đề 2): 1 buổi (1 Ngày + 1 Ca cụ thể) của 1 Lớp — buổi KHÔNG tách nhóm (groupLabel
+// NULL, học chung cả lớp, vd Lý thuyết) chỉ dành cho ĐÚNG 1 MÔN, giữ nguyên quy tắc cũ. Buổi CÓ tách
+// nhóm (groupLabel khác NULL): đơn vị độc quyền là (Lớp, NHÓM, Ngày, Ca) — mỗi NHÓM chỉ học đúng 1
+// môn, nhưng các NHÓM KHÁC NHAU của cùng buổi được phép học môn KHÁC NHAU (vd Nhóm 1+2 học Thực hành
+// môn X ở 2 phòng khác nhau, Nhóm 3 học Thực hành môn Y ở phòng khác — học ở phòng riêng, không đụng
+// nhau). 1 dòng KHÔNG tách nhóm (GroupLabel NULL) LUÔN coi là chiếm dụng TOÀN BỘ các nhóm — cả lớp
+// (mọi nhóm) đang cùng ngồi 1 chỗ, không nhóm nào rảnh để học môn khác giờ đó. Không áp dụng cho các
+// dòng CÙNG môn (Tách nhóm/Ghép lớp tự tạo nhiều dòng cho cùng 1 môn ở cùng slot — cơ chế khác).
+async function isSlotTakenByOtherSubject(
+  classId: number, date: string, session: SessionRow, subjectId: number, groupLabel: string | null
+): Promise<boolean> {
   const pool = await getPool();
   const result = await pool
     .request()
@@ -140,11 +145,13 @@ async function isSlotTakenByOtherSubject(classId: number, date: string, session:
     .input("sessionStart", sql.VarChar, session.StartTime)
     .input("sessionEnd", sql.VarChar, session.EndTime)
     .input("subjectId", sql.Int, subjectId)
+    .input("groupLabel", sql.NVarChar, groupLabel)
     .query<{ ScheduleId: number }>(`
       SELECT TOP 1 ScheduleId FROM Schedule
       WHERE ClassId = @classId AND ScheduleDate = @date
         AND StartTime < @sessionEnd AND EndTime > @sessionStart
         AND SubjectId <> @subjectId
+        AND (@groupLabel IS NULL OR GroupLabel IS NULL OR GroupLabel = @groupLabel)
     `);
   return result.recordset.length > 0;
 }
@@ -170,7 +177,7 @@ async function tryPlaceSingleBlock(ctx: RunContext, params: PlaceBlockParams): P
       const trainingCheck = await checkTrainingModeRule({ classId: ctx.classId, scheduleDate: date, startTime: session.StartTime });
       if (trainingCheck.violated) continue;
 
-      const takenByOther = await isSlotTakenByOtherSubject(ctx.classId, date, session, params.subjectId);
+      const takenByOther = await isSlotTakenByOtherSubject(ctx.classId, date, session, params.subjectId, params.groupLabel ?? null);
       if (takenByOther) continue;
 
       // Tối ưu hiệu năng QUAN TRỌNG: mọi phòng trong `eligibleRoomIds` CÙNG 1 nhóm loại phòng nên
@@ -537,7 +544,16 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
       scheduled += result.scheduled;
       if (result.failureReason) reasons.push(result.failureReason);
     }
-    if (practiceQuota > 0) {
+    // Việc BM (vấn đề 1): CHỈ xếp Thực hành/Lâm sàng khi Lý thuyết CẢ KỲ của ĐÚNG môn này đã xong
+    // (task.theoryRemaining — tính TỪ DB TRƯỚC khi chạy tuần này — bằng 0) — sai sư phạm nếu học Thực
+    // hành trước khi xong Lý thuyết. Cố tình dùng giá trị theoryRemaining TRƯỚC tuần này (không phải
+    // recompute sau khi vừa xếp Lý thuyết ở trên) — nếu Lý thuyết chỉ vừa xong TRONG tuần này thì vẫn
+    // dời Thực hành sang tuần sau, tránh Thực hành bị xếp vào ngày SỚM HƠN buổi Lý thuyết cuối cùng
+    // trong cùng tuần. Chỉ áp dụng cho ĐÚNG môn này — không ảnh hưởng môn khác (mỗi môn có
+    // theoryRemaining riêng, môn A có thể đang xếp Thực hành trong khi môn B vẫn đang xếp Lý thuyết).
+    if (practiceQuota > 0 && task.theoryRemaining > 0) {
+      reasons.push(`Chưa xếp Thực hành/Lâm sàng — còn thiếu ${task.theoryRemaining} tiết Lý thuyết cần học xong trước`);
+    } else if (practiceQuota > 0) {
       const result = await processSubjectPart(ctx, task, "Practice", task.practiceRemaining, practiceQuota, rooms, cls.ClassSize);
       scheduled += result.scheduled;
       if (result.failureReason) reasons.push(result.failureReason);
