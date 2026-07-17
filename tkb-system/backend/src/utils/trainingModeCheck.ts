@@ -6,7 +6,9 @@ type Period = "Sang" | "Chieu" | "Toi";
 // Xác định buổi (Sáng/Chiều/Tối) theo giờ bắt đầu — độc lập với tên Ca học tự đặt
 // (Ca học là danh mục tự do, có thể đổi tên/thêm mới) nên dùng mốc giờ cố định
 // để phân loại đúng buổi theo quy chuẩn nghiệp vụ, không phụ thuộc cách đặt tên.
-function classifyPeriod(startTime: string): Period {
+// Export để autoScheduler.ts tái sử dụng (Việc BN — loại Ca Tối khỏi Lâm sàng, ưu tiên Thứ 7/CN cho
+// hệ Liên thông), tránh định nghĩa lại logic phân loại buổi.
+export function classifyPeriod(startTime: string): Period {
   const hour = Number(startTime.split(":")[0]);
   if (hour < 12) return "Sang";
   if (hour < 18) return "Chieu";
@@ -14,7 +16,8 @@ function classifyPeriod(startTime: string): Period {
 }
 
 // 0=CN,1=T2,...,6=T7 — tính theo UTC để tránh lệch múi giờ của server.
-function getWeekday(dateStr: string): number {
+// Export để autoScheduler.ts tái sử dụng (Việc BN).
+export function getWeekday(dateStr: string): number {
   const [y, m, d] = dateStr.split("-").map(Number);
   return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
 }

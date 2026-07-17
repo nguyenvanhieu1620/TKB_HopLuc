@@ -8,7 +8,7 @@ import {
   CAPACITY_POLICY_BY_ROOM_TYPE, ROOM_TYPES_BY_CATEGORY, roomCategoryFor, getRequiredGroupCount,
 } from "./policyRules";
 import { checkScheduleConflict, findHoliday } from "./conflictCheck";
-import { checkTrainingModeRule, getClassTrainingMode } from "./trainingModeCheck";
+import { checkTrainingModeRule, getClassTrainingMode, classifyPeriod, getWeekday } from "./trainingModeCheck";
 import { writeAuditLog } from "./auditLog";
 import { notifyTeachers } from "./notify";
 
@@ -124,6 +124,9 @@ interface PlaceBlockParams {
   teacherIds: number[];
   totalStudents: number;
   groupLabel?: string | null;
+  // Việc BN: true khi block này là Lâm sàng (roomCategory === "LamSang") — dùng để loại Ca Tối khỏi
+  // danh sách Ca khả dụng (vấn đề 1), độc lập với checkTrainingModeRule.
+  isClinical?: boolean;
 }
 
 // Việc BM (vấn đề 2): 1 buổi (1 Ngày + 1 Ca cụ thể) của 1 Lớp — buổi KHÔNG tách nhóm (groupLabel
@@ -156,81 +159,112 @@ async function isSlotTakenByOtherSubject(
   return result.recordset.length > 0;
 }
 
-// Dò (Ngày, Ca) tăng dần trong khung [rangeStart, rangeEnd] — với mỗi (Ngày, Ca) hợp lệ theo Hệ đào
-// tạo (checkTrainingModeRule dùng như BỘ LỌC CỨNG ở đây, khác với xếp tay chỉ cảnh báo) và CHƯA bị
-// môn khác chiếm buổi (isSlotTakenByOtherSubject), thử từng GV (ưu tiên GV đang có ít giờ nhất trong
-// lần chạy này) × từng Phòng phù hợp — gọi ĐỦ các hàm kiểm tra đã có, pass hết thì tạo thật ngay (lưu
-// ngay theo đúng chỉ đạo, không bọc transaction lớn).
-async function tryPlaceSingleBlock(ctx: RunContext, params: PlaceBlockParams): Promise<{ success: boolean; scheduleId?: number }> {
+interface DateSessionSlot { date: string; session: SessionRow; }
+
+function isWeekendDate(dateStr: string): boolean {
+  const wd = getWeekday(dateStr);
+  return wd === 0 || wd === 6;
+}
+
+// Việc BN: sinh danh sách (Ngày, Ca) khả dụng trong khung [rangeStart, rangeEnd] theo ĐÚNG thứ tự ưu
+// tiên cần thử trước — vấn đề 1: Lâm sàng KHÔNG được xếp Ca Tối (loại khỏi danh sách TRƯỚC khi tính
+// slot, độc lập/chặt hơn checkTrainingModeRule — CQ/LT thường vẫn xếp Tối được nếu hợp lệ, riêng Lâm
+// sàng thì không, bất kể hệ đào tạo); vấn đề 2: Lớp kiểu Liên thông ưu tiên lấp kín Thứ 7/CN (Sáng
+// trước Chiều, theo đúng thứ tự Ngày tăng dần × Ca SortOrder có sẵn) TRƯỚC toàn bộ slot Tối các ngày
+// Thứ 2-6 — chỉ cần đổi thứ tự DANH SÁCH, tryPlaceSingleBlock vẫn duyệt tuần tự như cũ nên không cần
+// đổi logic thử-xếp bên dưới.
+function buildDateSessionSlots(ctx: RunContext, isClinical: boolean): DateSessionSlot[] {
+  const dates: string[] = [];
   let cursor = ctx.rangeStart;
   while (cursor <= ctx.rangeEnd) {
-    const date = cursor;
+    dates.push(cursor);
     cursor = shiftDateStr(cursor, 1);
+  }
 
+  const availableSessions = isClinical
+    ? ctx.sessions.filter((s) => classifyPeriod(s.StartTime) !== "Toi")
+    : ctx.sessions;
+
+  const slots = dates.flatMap((date) => availableSessions.map((session) => ({ date, session })));
+
+  if (ctx.trainingMode === "LT") {
+    const weekendSlots = slots.filter((s) => isWeekendDate(s.date));
+    const weekdaySlots = slots.filter((s) => !isWeekendDate(s.date));
+    return [...weekendSlots, ...weekdaySlots];
+  }
+  return slots;
+}
+
+// Dò (Ngày, Ca) theo ĐÚNG thứ tự ưu tiên đã sinh ở buildDateSessionSlots — với mỗi (Ngày, Ca) hợp lệ
+// theo Hệ đào tạo (checkTrainingModeRule dùng như BỘ LỌC CỨNG ở đây, khác với xếp tay chỉ cảnh báo) và
+// CHƯA bị môn khác chiếm buổi (isSlotTakenByOtherSubject), thử từng GV (ưu tiên GV đang có ít giờ nhất
+// trong lần chạy này) × từng Phòng phù hợp — gọi ĐỦ các hàm kiểm tra đã có, pass hết thì tạo thật ngay
+// (lưu ngay theo đúng chỉ đạo, không bọc transaction lớn).
+async function tryPlaceSingleBlock(ctx: RunContext, params: PlaceBlockParams): Promise<{ success: boolean; scheduleId?: number }> {
+  const slots = buildDateSessionSlots(ctx, params.isClinical ?? false);
+  for (const { date, session } of slots) {
     const holiday = await findHoliday(date, ctx.trainingMode);
     if (holiday) continue;
 
-    for (const session of ctx.sessions) {
-      const endTime = addMinutesToTime(session.StartTime, params.periods * params.periodMinutes);
-      if (endTime > session.EndTime) continue;
+    const endTime = addMinutesToTime(session.StartTime, params.periods * params.periodMinutes);
+    if (endTime > session.EndTime) continue;
 
-      const trainingCheck = await checkTrainingModeRule({ classId: ctx.classId, scheduleDate: date, startTime: session.StartTime });
-      if (trainingCheck.violated) continue;
+    const trainingCheck = await checkTrainingModeRule({ classId: ctx.classId, scheduleDate: date, startTime: session.StartTime });
+    if (trainingCheck.violated) continue;
 
-      const takenByOther = await isSlotTakenByOtherSubject(ctx.classId, date, session, params.subjectId, params.groupLabel ?? null);
-      if (takenByOther) continue;
+    const takenByOther = await isSlotTakenByOtherSubject(ctx.classId, date, session, params.subjectId, params.groupLabel ?? null);
+    if (takenByOther) continue;
 
-      // Tối ưu hiệu năng QUAN TRỌNG: mọi phòng trong `eligibleRoomIds` CÙNG 1 nhóm loại phòng nên
-      // checkSessionLength/checkDailyHoursLimit (chỉ phụ thuộc NHÓM loại phòng qua periodMinutes,
-      // không phụ thuộc phòng cụ thể nào) cho ra CÙNG kết quả với BẤT KỲ phòng nào trong danh sách —
-      // gọi 1 LẦN bằng phòng đại diện thay vì lặp lại cho từng phòng × từng GV, tránh hàng chục
-      // nghìn lệnh gọi DB thừa khi khung Kỳ dài và có nhiều Phòng/GV khả dĩ.
-      const representativeRoomId = params.eligibleRoomIds[0];
-      const sessionLengthCheck = await checkSessionLength({ roomId: representativeRoomId, startTime: session.StartTime, endTime });
-      if (sessionLengthCheck.violated) continue;
+    // Tối ưu hiệu năng QUAN TRỌNG: mọi phòng trong `eligibleRoomIds` CÙNG 1 nhóm loại phòng nên
+    // checkSessionLength/checkDailyHoursLimit (chỉ phụ thuộc NHÓM loại phòng qua periodMinutes,
+    // không phụ thuộc phòng cụ thể nào) cho ra CÙNG kết quả với BẤT KỲ phòng nào trong danh sách —
+    // gọi 1 LẦN bằng phòng đại diện thay vì lặp lại cho từng phòng × từng GV, tránh hàng chục
+    // nghìn lệnh gọi DB thừa khi khung Kỳ dài và có nhiều Phòng/GV khả dĩ.
+    const representativeRoomId = params.eligibleRoomIds[0];
+    const sessionLengthCheck = await checkSessionLength({ roomId: representativeRoomId, startTime: session.StartTime, endTime });
+    if (sessionLengthCheck.violated) continue;
 
-      const dailyHoursCheck = await checkDailyHoursLimit({
-        classId: ctx.classId, scheduleDate: date, roomId: representativeRoomId, startTime: session.StartTime, endTime,
-      });
-      if (dailyHoursCheck.violated) continue;
+    const dailyHoursCheck = await checkDailyHoursLimit({
+      classId: ctx.classId, scheduleDate: date, roomId: representativeRoomId, startTime: session.StartTime, endTime,
+    });
+    if (dailyHoursCheck.violated) continue;
 
-      const sortedTeachers = [...params.teacherIds].sort(
-        (a, b) => (ctx.teacherLoadTally.get(a) || 0) - (ctx.teacherLoadTally.get(b) || 0)
-      );
-      for (const teacherId of sortedTeachers) {
-        // Cùng lý do — giờ dạy chuẩn (weekly/yearly) chỉ phụ thuộc GV + độ dài quy đổi theo NHÓM
-        // loại phòng, không phụ thuộc phòng cụ thể nào trong cùng nhóm — gọi 1 lần/GV thay vì
-        // lặp lại cho từng phòng.
-        const weeklyCheck = await checkTeacherWeeklyHours({ teacherId, scheduleDate: date, roomId: representativeRoomId, startTime: session.StartTime, endTime });
-        if (weeklyCheck.violated) continue;
+    const sortedTeachers = [...params.teacherIds].sort(
+      (a, b) => (ctx.teacherLoadTally.get(a) || 0) - (ctx.teacherLoadTally.get(b) || 0)
+    );
+    for (const teacherId of sortedTeachers) {
+      // Cùng lý do — giờ dạy chuẩn (weekly/yearly) chỉ phụ thuộc GV + độ dài quy đổi theo NHÓM
+      // loại phòng, không phụ thuộc phòng cụ thể nào trong cùng nhóm — gọi 1 lần/GV thay vì
+      // lặp lại cho từng phòng.
+      const weeklyCheck = await checkTeacherWeeklyHours({ teacherId, scheduleDate: date, roomId: representativeRoomId, startTime: session.StartTime, endTime });
+      if (weeklyCheck.violated) continue;
 
-        const yearlyCheck = await checkTeacherYearlyHours({ teacherId, scheduleDate: date, roomId: representativeRoomId, startTime: session.StartTime, endTime });
-        if (yearlyCheck.violated) continue;
+      const yearlyCheck = await checkTeacherYearlyHours({ teacherId, scheduleDate: date, roomId: representativeRoomId, startTime: session.StartTime, endTime });
+      if (yearlyCheck.violated) continue;
 
-        for (const roomId of params.eligibleRoomIds) {
-          // Chỉ còn 2 kiểm tra THẬT SỰ phụ thuộc phòng cụ thể: phòng có đang bận (conflict/GV
-          // trùng giờ) và sĩ số có vừa phòng đó không.
-          const conflict = await checkScheduleConflict({
-            roomId, teacherIds: [teacherId], date, startTime: session.StartTime, endTime,
-          });
-          if (conflict.hasConflict) continue;
+      for (const roomId of params.eligibleRoomIds) {
+        // Chỉ còn 2 kiểm tra THẬT SỰ phụ thuộc phòng cụ thể: phòng có đang bận (conflict/GV
+        // trùng giờ) và sĩ số có vừa phòng đó không.
+        const conflict = await checkScheduleConflict({
+          roomId, teacherIds: [teacherId], date, startTime: session.StartTime, endTime,
+        });
+        if (conflict.hasConflict) continue;
 
-          // Việc BH: params.groupLabel chỉ có giá trị khi block này đến từ tryPlaceGroupSplitBlock —
-          // lúc đó params.totalStudents ĐÃ là sĩ số riêng của 1 nhóm (perGroupSize tính sẵn ở đó), so
-          // với sức chứa THẬT của phòng thay vì mốc chính sách.
-          const capacityCheck = await checkRoomCapacity({
-            roomId, totalStudents: params.totalStudents, isGroupSplit: !!params.groupLabel,
-          });
-          if (capacityCheck.violated) continue;
+        // Việc BH: params.groupLabel chỉ có giá trị khi block này đến từ tryPlaceGroupSplitBlock —
+        // lúc đó params.totalStudents ĐÃ là sĩ số riêng của 1 nhóm (perGroupSize tính sẵn ở đó), so
+        // với sức chứa THẬT của phòng thay vì mốc chính sách.
+        const capacityCheck = await checkRoomCapacity({
+          roomId, totalStudents: params.totalStudents, isGroupSplit: !!params.groupLabel,
+        });
+        if (capacityCheck.violated) continue;
 
-          const scheduleId = await insertSession(ctx, {
-            subjectId: params.subjectId, roomId, teacherId, date,
-            startTime: session.StartTime, endTime, sessionType: params.sessionType, groupLabel: params.groupLabel,
-          });
-          ctx.teacherLoadTally.set(teacherId, (ctx.teacherLoadTally.get(teacherId) || 0) + params.periods);
-          ctx.notifiedTeacherIds.add(teacherId);
-          return { success: true, scheduleId };
-        }
+        const scheduleId = await insertSession(ctx, {
+          subjectId: params.subjectId, roomId, teacherId, date,
+          startTime: session.StartTime, endTime, sessionType: params.sessionType, groupLabel: params.groupLabel,
+        });
+        ctx.teacherLoadTally.set(teacherId, (ctx.teacherLoadTally.get(teacherId) || 0) + params.periods);
+        ctx.notifiedTeacherIds.add(teacherId);
+        return { success: true, scheduleId };
       }
     }
   }
@@ -329,6 +363,7 @@ async function processSubjectPart(
       const params: PlaceBlockParams = {
         subjectId: task.subjectId, sessionType, periods: blockSize, periodMinutes,
         eligibleRoomIds, teacherIds: task.teacherIds, totalStudents: classSize,
+        isClinical: roomCategory === "LamSang",
       };
       const result = groupCount > 1
         ? await tryPlaceGroupSplitBlock(ctx, { ...params, groupCount })
