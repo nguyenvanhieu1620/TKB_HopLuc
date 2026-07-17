@@ -51,6 +51,7 @@ interface SubjectTask {
   subjectId: number;
   subjectName: string;
   practiceMode: string;
+  category: string | null;
   theoryRemaining: number;
   practiceRemaining: number;
   teacherIds: number[];
@@ -402,7 +403,7 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
     .input("majorId", sql.Int, cls.MajorId)
     .input("termNumber", sql.Int, semester.TermNumber)
     .input("cohortId", sql.Int, cls.CohortId)
-    .query<{ SubjectId: number; SubjectName: string; PracticeMode: string }>(`
+    .query<{ SubjectId: number; SubjectName: string; PracticeMode: string; Category: string | null }>(`
       WITH ranked AS (
         SELECT ci.SubjectId, ci.PracticeMode,
                ROW_NUMBER() OVER (PARTITION BY ci.SubjectId ORDER BY CASE WHEN ci.CohortId = @cohortId THEN 0 ELSE 1 END) AS rn
@@ -410,7 +411,7 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
         WHERE ci.MajorId = @majorId AND ci.TermNumber = @termNumber AND ci.IsActive = 1
           AND (ci.CohortId = @cohortId OR ci.CohortId IS NULL)
       )
-      SELECT r.SubjectId, sub.SubjectName, r.PracticeMode
+      SELECT r.SubjectId, sub.SubjectName, r.PracticeMode, sub.Category
       FROM ranked r
       INNER JOIN Subjects sub ON sub.SubjectId = r.SubjectId
       WHERE r.rn = 1 AND sub.IsActive = 1
@@ -435,6 +436,7 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
         subjectId: row.SubjectId,
         subjectName: row.SubjectName,
         practiceMode: row.PracticeMode,
+        category: row.Category,
         theoryRemaining: Math.max(0, targets.theoryTarget - theoryDone),
         practiceRemaining: Math.max(0, targets.practiceTarget - practiceDone),
         teacherIds: teacherResult.recordset.map((t) => t.TeacherId),
@@ -442,16 +444,38 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
     })
   );
 
-  // Sắp xếp môn ÍT lựa chọn nhất (GV/phòng) xử lý trước — không dùng Category (chưa được rà soát
-  // đầy đủ trong dữ liệu thật, xem ghi chú trong kế hoạch triển khai).
   const rooms = roomsResult.recordset;
-  const theoryRoomCount = rooms.filter((r) => ROOM_TYPES_BY_CATEGORY.LyThuyet.includes(r.RoomType)).length;
-  function difficultyScore(task: SubjectTask): number {
-    const practiceCategory = roomCategoryFor(task.practiceMode, "Practice");
-    const practiceRoomCount = rooms.filter((r) => ROOM_TYPES_BY_CATEGORY[practiceCategory]?.includes(r.RoomType)).length;
-    return task.teacherIds.length * (theoryRoomCount + practiceRoomCount);
+
+  // Việc BK: chỉ tiêu tuần (Math.ceil(số tiết còn thiếu / số tuần còn lại), tính riêng Lý thuyết +
+  // Thực hành rồi cộng lại) — dùng LÀM CHUNG cho cả sắp xếp thứ tự xử lý VÀ giới hạn số tiết/tuần ở
+  // vòng lặp chính bên dưới, tránh 2 nơi tính lệch nhau.
+  function computeQuotas(task: SubjectTask): { theoryQuota: number; practiceQuota: number } {
+    return {
+      theoryQuota: task.theoryRemaining > 0 ? Math.ceil(task.theoryRemaining / weeksRemaining) : 0,
+      practiceQuota: task.practiceRemaining > 0 ? Math.ceil(task.practiceRemaining / weeksRemaining) : 0,
+    };
   }
-  subjectTasks.sort((a, b) => difficultyScore(a) - difficultyScore(b) || a.subjectId - b.subjectId);
+
+  // Việc BK: sắp xếp môn xử lý TRONG TUẦN NÀY theo mức độ CẤP BÁCH (chỉ tiêu tuần = theoryQuota +
+  // practiceQuota) GIẢM DẦN — môn càng "đuối" so với thời gian còn lại (còn thiếu nhiều tiết/tuần)
+  // càng được xử lý TRƯỚC, xếp trọn vẹn tối đa 1 buổi trước khi tới môn tiếp theo. Nhờ vậy môn NẶNG
+  // (vd 90-100 tiết) sẽ tự động có chỉ tiêu tuần cao ngay từ Tuần 1, luôn được ưu tiên xử lý sớm và
+  // đều đặn mỗi tuần — không bị các môn nhẹ hơn chiếm hết slot trước rồi dồn hết vào cuối Kỳ (vấn đề
+  // đã phát hiện với cách sắp cũ theo độ khan hiếm GV/phòng, vốn KHÔNG đổi theo tiến độ từng tuần nên
+  // giữ nguyên 1 thứ tự cố định suốt cả Kỳ). Category chỉ còn là tiêu chí PHỤ để phá thế hòa khi 2 môn
+  // có chỉ tiêu tuần bằng nhau, không còn là tiêu chí chính chặn cứng thứ tự.
+  const CATEGORY_ORDER: Record<string, number> = { DaiCuong: 0, CoSoNganh: 1, ChuyenNganh: 2 };
+  function urgency(task: SubjectTask): number {
+    const { theoryQuota, practiceQuota } = computeQuotas(task);
+    return theoryQuota + practiceQuota;
+  }
+  subjectTasks.sort((a, b) => {
+    const urgencyDiff = urgency(b) - urgency(a);
+    if (urgencyDiff !== 0) return urgencyDiff;
+    const catDiff = (CATEGORY_ORDER[a.category ?? ""] ?? 99) - (CATEGORY_ORDER[b.category ?? ""] ?? 99);
+    if (catDiff !== 0) return catDiff;
+    return a.subjectId - b.subjectId;
+  });
 
   const autoScheduleRunId = randomUUID();
   const ctx: RunContext = {
@@ -477,23 +501,23 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
       continue;
     }
 
-    // Chỉ tiêu TUẦN NÀY (chia đều số tiết còn thiếu cả Kỳ cho số tuần còn lại, làm tròn lên) dùng
+    // Chỉ tiêu TUẦN NÀY (computeQuotas — cùng công thức đã dùng để sắp thứ tự xử lý môn ở trên) dùng
     // CHO 2 việc: (1) quyết định phần nào (Lý thuyết/Thực hành) của môn này được XÉT xử lý trong
     // tuần đang chạy — quota luôn > 0 khi phần đó còn thiếu; (2) làm giới hạn TỔNG SỐ TIẾT xếp được
     // của phần đó TRONG TUẦN NÀY (vòng lặp ngoài của processSubjectPart dừng khi đạt quota) — đây là
     // phần tự sửa lại so với bản đầu: thử bỏ hẳn giới hạn này (chỉ dùng quota để bật/tắt xét môn,
-    // không chặn số tiết) và test thật cho thấy 1-2 môn xử lý trước (theo thứ tự độ khó) chiếm hết
-    // slot cả tuần, các môn còn lại nhận 0 tiết — sai với tinh thần "xếp dần đều qua các tuần". Nên
-    // quota vẫn cần chặn TỔNG số tiết/tuần để công bằng giữa các môn.
-    // Cái ĐÚNG THEO YÊU CẦU đã sửa là KÍCH THƯỚC 1 BLOCK: processSubjectPart không còn tính blockSize
-    // từ quota nữa mà tính từ phần còn thiếu CẢ MÔN (task.theoryRemaining/practiceRemaining) — luôn
-    // cố xếp TRỌN VẸN tối đa/buổi thay vì cắt nhỏ theo chỉ tiêu tuần — nên block cuối cùng của 1 môn
-    // trong tuần vẫn có thể NHỈNH hơn quota một chút (quota không cắt giữa block), chỉ không được nhỏ
-    // hơn giới hạn tối thiểu 2 tiết (trừ khi còn đúng 1 tiết cuối cùng của cả môn).
+    // không chặn số tiết) và test thật cho thấy 1-2 môn xử lý trước chiếm hết slot cả tuần, các môn
+    // còn lại nhận 0 tiết — sai với tinh thần "xếp dần đều qua các tuần". Nên quota vẫn cần chặn TỔNG
+    // số tiết/tuần để công bằng giữa các môn — Việc BK giải quyết vấn đề "dồn cục cuối Kỳ" bằng cách
+    // đổi THỨ TỰ xử lý môn (ưu tiên môn cấp bách nhất trước) chứ không đổi cơ chế quota này.
+    // KÍCH THƯỚC 1 BLOCK: processSubjectPart không tính blockSize từ quota mà tính từ phần còn thiếu
+    // CẢ MÔN (task.theoryRemaining/practiceRemaining) — luôn cố xếp TRỌN VẸN tối đa/buổi thay vì cắt
+    // nhỏ theo chỉ tiêu tuần — nên block cuối cùng của 1 môn trong tuần vẫn có thể NHỈNH hơn quota một
+    // chút (quota không cắt giữa block), chỉ không được nhỏ hơn giới hạn tối thiểu 2 tiết (trừ khi còn
+    // đúng 1 tiết cuối cùng của cả môn).
     // periodsNeeded/periodsScheduled báo cáo theo phần còn thiếu THẬT của cả môn (không phải theo
     // chỉ tiêu tuần).
-    const theoryQuota = task.theoryRemaining > 0 ? Math.ceil(task.theoryRemaining / weeksRemaining) : 0;
-    const practiceQuota = task.practiceRemaining > 0 ? Math.ceil(task.practiceRemaining / weeksRemaining) : 0;
+    const { theoryQuota, practiceQuota } = computeQuotas(task);
     const periodsNeeded = totalRemaining;
 
     if (task.teacherIds.length === 0) {
