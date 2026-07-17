@@ -232,8 +232,15 @@ export async function checkDailyHoursLimit({
     })
     .join(", ");
 
+  // Việc BO: DISTINCT theo (StartTime, EndTime) — 1 buổi Tách nhóm (nhiều nhóm học song song ở
+  // nhiều phòng cùng lúc, kể cả khác môn theo Việc BM vấn đề 2) tạo NHIỀU dòng Schedule cùng khung
+  // giờ, nhưng với học sinh chỉ tốn ĐÚNG 1 khung giờ đó trong ngày — không nhân đôi/ba theo số nhóm.
+  // Trước đây SUM thẳng từng dòng khiến 1 buổi 3 nhóm song song bị tính thành 3x thời lượng thật,
+  // khiến tổng giờ/ngày vượt ngưỡng ảo, chặn nhầm các buổi hợp lệ xử lý SAU trong cùng ngày (chẩn
+  // đoán qua log chi tiết + đối chiếu dữ liệu thật: Sáng Chủ nhật tách 2 nhóm song song bị tính gấp
+  // đôi, khiến Chiều Chủ nhật cùng ngày luôn bị chặn dù còn trống thật).
   const existingResult = await request.query<{ StartTime: string; EndTime: string }>(`
-    SELECT CONVERT(VARCHAR(5), s.StartTime, 108) AS StartTime, CONVERT(VARCHAR(5), s.EndTime, 108) AS EndTime
+    SELECT DISTINCT CONVERT(VARCHAR(5), s.StartTime, 108) AS StartTime, CONVERT(VARCHAR(5), s.EndTime, 108) AS EndTime
     FROM Schedule s
     INNER JOIN Rooms r ON r.RoomId = s.RoomId
     WHERE s.ClassId = @classId AND s.ScheduleDate = @date AND r.RoomType IN (${placeholders})
@@ -246,7 +253,11 @@ export async function checkDailyHoursLimit({
   // hiện tại là đủ, không cần tra riêng từng dòng lịch sử.
   const periodMinutes = await getPeriodMinutes(room.RoomType);
   const existingMinutes = existingResult.recordset.reduce((sum, r) => sum + diffMinutes(r.StartTime, r.EndTime), 0);
-  const totalMinutes = existingMinutes + diffMinutes(startTime, endTime);
+  // Block đang kiểm tra có thể chính là 1 NHÓM SONG SONG khác của 1 khung giờ ĐÃ có sẵn trong
+  // existingResult (vd đang xét Nhóm 2 trong khi Nhóm 1 của cùng buổi đã lưu trước đó) — nếu khung
+  // giờ trùng khớp hoàn toàn, KHÔNG cộng thêm lần nữa (đã tính trong existingMinutes rồi).
+  const candidateAlreadyCounted = existingResult.recordset.some((r) => r.StartTime === startTime && r.EndTime === endTime);
+  const totalMinutes = candidateAlreadyCounted ? existingMinutes : existingMinutes + diffMinutes(startTime, endTime);
   const totalPeriods = totalMinutes / periodMinutes;
 
   const maxPeriodsKey = category === "LyThuyet" ? "MaxTheoryHoursPerDay" : "MaxPracticeHoursPerDay";
