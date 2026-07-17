@@ -161,18 +161,44 @@ async function isSlotTakenByOtherSubject(
 
 interface DateSessionSlot { date: string; session: SessionRow; }
 
-function isWeekendDate(dateStr: string): boolean {
-  const wd = getWeekday(dateStr);
-  return wd === 0 || wd === 6;
+// Việc BO: thứ tự ưu tiên ĐẦY ĐỦ khi sinh danh sách (Ngày, Ca) khả dụng trong tuần cho Lớp kiểu Liên
+// thông — thay thế hoàn toàn cách sắp "cuối tuần trước, tối sau" đơn giản ở bản trước (Việc BN), dùng
+// bản này làm chuẩn cuối cùng. Từ ưu tiên cao xuống thấp:
+//   1. Thứ 7 Sáng, Thứ 7 Chiều, Chủ nhật Sáng, Chủ nhật Chiều
+//   2. Tối Thứ 5, Tối Thứ 6 (chỉ dùng khi nhóm 1 đã hết chỗ)
+//   3. Tối Thứ 2, Tối Thứ 3, Tối Thứ 4 (chỉ dùng khi nhóm 1+2 đã hết chỗ)
+//   4. Tối Thứ 7 (phương án CUỐI CÙNG, chỉ dùng khi nhóm 1+2+3 đều đã hết chỗ)
+// Tối Chủ nhật KHÔNG BAO GIỜ đưa vào danh sách. Thứ 2-6 Sáng/Chiều cũng không đưa vào — chưa từng hợp
+// lệ với hệ Liên thông theo checkTrainingModeRule, đưa vào chỉ tốn vòng lặp thử vô ích.
+// weekday: 0=CN,1=T2,2=T3,3=T4,4=T5,5=T6,6=T7 (cùng quy ước getWeekday).
+function buildLTPrioritySlots(dates: string[], availableSessions: SessionRow[]): DateSessionSlot[] {
+  const datesByWeekday = new Map<number, string[]>();
+  for (const date of dates) {
+    const wd = getWeekday(date);
+    if (!datesByWeekday.has(wd)) datesByWeekday.set(wd, []);
+    datesByWeekday.get(wd)!.push(date);
+  }
+  const nonToiSessions = availableSessions.filter((s) => classifyPeriod(s.StartTime) !== "Toi");
+  const toiSessions = availableSessions.filter((s) => classifyPeriod(s.StartTime) === "Toi");
+
+  const slotsForWeekdays = (weekdays: number[], sessions: SessionRow[]): DateSessionSlot[] =>
+    weekdays.flatMap((wd) => (datesByWeekday.get(wd) || []).flatMap((date) => sessions.map((session) => ({ date, session }))));
+
+  return [
+    ...slotsForWeekdays([6, 0], nonToiSessions), // 1. T7 Sáng/Chiều, CN Sáng/Chiều
+    ...slotsForWeekdays([4, 5], toiSessions),    // 2. Tối T5, Tối T6
+    ...slotsForWeekdays([1, 2, 3], toiSessions), // 3. Tối T2, T3, T4
+    ...slotsForWeekdays([6], toiSessions),       // 4. Tối T7
+    // Tối CN (weekday 0, toiSessions) cố tình KHÔNG đưa vào.
+  ];
 }
 
-// Việc BN: sinh danh sách (Ngày, Ca) khả dụng trong khung [rangeStart, rangeEnd] theo ĐÚNG thứ tự ưu
-// tiên cần thử trước — vấn đề 1: Lâm sàng KHÔNG được xếp Ca Tối (loại khỏi danh sách TRƯỚC khi tính
+// Việc BN/BO: sinh danh sách (Ngày, Ca) khả dụng trong khung [rangeStart, rangeEnd] theo ĐÚNG thứ tự
+// ưu tiên cần thử trước — vấn đề 1: Lâm sàng KHÔNG được xếp Ca Tối (loại khỏi danh sách TRƯỚC khi tính
 // slot, độc lập/chặt hơn checkTrainingModeRule — CQ/LT thường vẫn xếp Tối được nếu hợp lệ, riêng Lâm
-// sàng thì không, bất kể hệ đào tạo); vấn đề 2: Lớp kiểu Liên thông ưu tiên lấp kín Thứ 7/CN (Sáng
-// trước Chiều, theo đúng thứ tự Ngày tăng dần × Ca SortOrder có sẵn) TRƯỚC toàn bộ slot Tối các ngày
-// Thứ 2-6 — chỉ cần đổi thứ tự DANH SÁCH, tryPlaceSingleBlock vẫn duyệt tuần tự như cũ nên không cần
-// đổi logic thử-xếp bên dưới.
+// sàng thì không, bất kể hệ đào tạo); vấn đề 2: Lớp kiểu Liên thông theo đúng 4 nhóm ưu tiên của
+// buildLTPrioritySlots ở trên — chỉ cần đổi thứ tự DANH SÁCH, tryPlaceSingleBlock vẫn duyệt tuần tự
+// như cũ nên không cần đổi logic thử-xếp bên dưới.
 function buildDateSessionSlots(ctx: RunContext, isClinical: boolean): DateSessionSlot[] {
   const dates: string[] = [];
   let cursor = ctx.rangeStart;
@@ -185,14 +211,10 @@ function buildDateSessionSlots(ctx: RunContext, isClinical: boolean): DateSessio
     ? ctx.sessions.filter((s) => classifyPeriod(s.StartTime) !== "Toi")
     : ctx.sessions;
 
-  const slots = dates.flatMap((date) => availableSessions.map((session) => ({ date, session })));
-
   if (ctx.trainingMode === "LT") {
-    const weekendSlots = slots.filter((s) => isWeekendDate(s.date));
-    const weekdaySlots = slots.filter((s) => !isWeekendDate(s.date));
-    return [...weekendSlots, ...weekdaySlots];
+    return buildLTPrioritySlots(dates, availableSessions);
   }
-  return slots;
+  return dates.flatMap((date) => availableSessions.map((session) => ({ date, session })));
 }
 
 // Dò (Ngày, Ca) theo ĐÚNG thứ tự ưu tiên đã sinh ở buildDateSessionSlots — với mỗi (Ngày, Ca) hợp lệ
