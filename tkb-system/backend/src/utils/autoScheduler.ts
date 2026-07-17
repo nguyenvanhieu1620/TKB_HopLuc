@@ -134,12 +134,23 @@ interface PlaceBlockParams {
 // nhóm (groupLabel khác NULL): đơn vị độc quyền là (Lớp, NHÓM, Ngày, Ca) — mỗi NHÓM chỉ học đúng 1
 // môn, nhưng các NHÓM KHÁC NHAU của cùng buổi được phép học môn KHÁC NHAU (vd Nhóm 1+2 học Thực hành
 // môn X ở 2 phòng khác nhau, Nhóm 3 học Thực hành môn Y ở phòng khác — học ở phòng riêng, không đụng
-// nhau). 1 dòng KHÔNG tách nhóm (GroupLabel NULL) LUÔN coi là chiếm dụng TOÀN BỘ các nhóm — cả lớp
-// (mọi nhóm) đang cùng ngồi 1 chỗ, không nhóm nào rảnh để học môn khác giờ đó. Không áp dụng cho các
-// dòng CÙNG môn (Tách nhóm/Ghép lớp tự tạo nhiều dòng cho cùng 1 môn ở cùng slot — cơ chế khác).
-async function isSlotTakenByOtherSubject(
-  classId: number, date: string, session: SessionRow, subjectId: number, groupLabel: string | null
-): Promise<boolean> {
+// nhau).
+//
+// Việc BP: ĐÃ BỎ điều kiện "SubjectId <> @subjectId" từng có ở đây — chẩn đoán qua log chi tiết
+// (Tuần 12-13 của 1 Lớp Liên thông, xem lịch sử thay đổi) phát hiện đây là lỗi thật, không phải hết
+// nhu cầu: điều kiện đó vốn định dùng để KHÔNG tự chặn các dòng Tách nhóm CỦA CHÍNH 1 lần gọi
+// tryPlaceGroupSplitBlock (Nhóm 1, Nhóm 2... cùng môn, cùng slot) — nhưng processSubjectPart gọi LẠI
+// tryPlaceSingleBlock/tryPlaceGroupSplitBlock nhiều lần (mỗi block 1 lần, cùng 1 môn, trong cùng 1
+// tuần), và mỗi lần dò lại từ đầu danh sách slot — nên "luôn miễn trừ cùng môn" vô tình cho phép
+// CHÍNH môn đó tự đặt NHIỀU block khác nhau (khác GV/Phòng, không phải Tách nhóm thật) vào ĐÚNG CÙNG
+// 1 (Ngày, Ca), dồn quá nhiều tiết vào 1 buổi — khiến checkDailyHoursLimit của NGÀY đó bị tính vượt
+// ngưỡng ngay từ sớm, chặn nhầm các slot xử lý SAU trong cùng ngày (vd Chiều Chủ nhật, xử lý sau
+// Sáng Chủ nhật) dù bản thân slot đó thực ra còn trống. SỬA: bỏ hẳn miễn trừ theo SubjectId, chỉ còn
+// dựa vào GroupLabel — an toàn cho Tách nhóm thật vì mỗi lần gọi tryPlaceGroupSplitBlock luôn sinh
+// NHÃN MỚI "Nhóm 1".."Nhóm N" (không trùng nhãn giữa các nhóm trong CÙNG 1 lần gọi), nên các nhóm đó
+// vốn dĩ không cần miễn trừ theo môn mới phân biệt được với nhau. Kết quả: (Ngày, Ca, Nhóm) giờ chỉ
+// được CHIẾM DỤNG ĐÚNG 1 LẦN, không phân biệt môn nào đặt trước — kể cả cùng 1 môn.
+async function isSlotOccupied(classId: number, date: string, session: SessionRow, groupLabel: string | null): Promise<boolean> {
   const pool = await getPool();
   const result = await pool
     .request()
@@ -147,13 +158,11 @@ async function isSlotTakenByOtherSubject(
     .input("date", sql.Date, date)
     .input("sessionStart", sql.VarChar, session.StartTime)
     .input("sessionEnd", sql.VarChar, session.EndTime)
-    .input("subjectId", sql.Int, subjectId)
     .input("groupLabel", sql.NVarChar, groupLabel)
     .query<{ ScheduleId: number }>(`
       SELECT TOP 1 ScheduleId FROM Schedule
       WHERE ClassId = @classId AND ScheduleDate = @date
         AND StartTime < @sessionEnd AND EndTime > @sessionStart
-        AND SubjectId <> @subjectId
         AND (@groupLabel IS NULL OR GroupLabel IS NULL OR GroupLabel = @groupLabel)
     `);
   return result.recordset.length > 0;
@@ -219,9 +228,9 @@ function buildDateSessionSlots(ctx: RunContext, isClinical: boolean): DateSessio
 
 // Dò (Ngày, Ca) theo ĐÚNG thứ tự ưu tiên đã sinh ở buildDateSessionSlots — với mỗi (Ngày, Ca) hợp lệ
 // theo Hệ đào tạo (checkTrainingModeRule dùng như BỘ LỌC CỨNG ở đây, khác với xếp tay chỉ cảnh báo) và
-// CHƯA bị môn khác chiếm buổi (isSlotTakenByOtherSubject), thử từng GV (ưu tiên GV đang có ít giờ nhất
-// trong lần chạy này) × từng Phòng phù hợp — gọi ĐỦ các hàm kiểm tra đã có, pass hết thì tạo thật ngay
-// (lưu ngay theo đúng chỉ đạo, không bọc transaction lớn).
+// CHƯA bị chiếm (isSlotOccupied), thử từng GV (ưu tiên GV đang có ít giờ nhất trong lần chạy này) ×
+// từng Phòng phù hợp — gọi ĐỦ các hàm kiểm tra đã có, pass hết thì tạo thật ngay (lưu ngay theo đúng
+// chỉ đạo, không bọc transaction lớn).
 async function tryPlaceSingleBlock(ctx: RunContext, params: PlaceBlockParams): Promise<{ success: boolean; scheduleId?: number }> {
   const slots = buildDateSessionSlots(ctx, params.isClinical ?? false);
   for (const { date, session } of slots) {
@@ -234,8 +243,8 @@ async function tryPlaceSingleBlock(ctx: RunContext, params: PlaceBlockParams): P
     const trainingCheck = await checkTrainingModeRule({ classId: ctx.classId, scheduleDate: date, startTime: session.StartTime });
     if (trainingCheck.violated) continue;
 
-    const takenByOther = await isSlotTakenByOtherSubject(ctx.classId, date, session, params.subjectId, params.groupLabel ?? null);
-    if (takenByOther) continue;
+    const occupied = await isSlotOccupied(ctx.classId, date, session, params.groupLabel ?? null);
+    if (occupied) continue;
 
     // Tối ưu hiệu năng QUAN TRỌNG: mọi phòng trong `eligibleRoomIds` CÙNG 1 nhóm loại phòng nên
     // checkSessionLength/checkDailyHoursLimit (chỉ phụ thuộc NHÓM loại phòng qua periodMinutes,
