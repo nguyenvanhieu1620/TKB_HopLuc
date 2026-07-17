@@ -355,6 +355,10 @@ export default function ScheduleGrid() {
   const [autoScheduleReport, setAutoScheduleReport] = useState<AutoScheduleReport | null>(null);
   const [autoScheduleError, setAutoScheduleError] = useState("");
 
+  // Việc BL: xóa toàn bộ Schedule của Lớp đang chọn trong đúng Tuần đang xem — chỉ 1 lần bấm, hữu ích
+  // để dọn sạch xếp lại (đặc biệt lúc thử thuật toán tự động).
+  const [deletingWeek, setDeletingWeek] = useState(false);
+
   const [selectedWeekIndex, setSelectedWeekIndex] = useState(0);
 
   // Việc AU: chế độ xem "Tất cả các lớp" — bảng tổng hợp toàn trường theo TUẦN LỊCH THẬT (không
@@ -1064,6 +1068,39 @@ export default function ScheduleGrid() {
     loadSchedule();
   }
 
+  // Việc BL: xóa toàn bộ Schedule (tiết học thường) của Lớp đang chọn trong đúng Tuần đang xem — CHỈ
+  // Schedule, không động tới Exams (lịch thi vẫn xóa riêng qua trang Lịch thi như bình thường).
+  async function handleDeleteWeek() {
+    if (!filters.classId || !currentWeek) return;
+    const className = classes.find((c) => String(c.ClassId) === filters.classId)?.ClassName ?? `Lớp #${filters.classId}`;
+    const weekScheduleCount = (rows || []).filter((r) => {
+      const key = r.ScheduleDate.slice(0, 10);
+      return key >= toDateKey(currentWeek.start) && key <= toDateKey(currentWeek.end);
+    }).length;
+    if (weekScheduleCount === 0) {
+      alert(`Tuần ${currentWeek.weekNumber} của Lớp ${className} chưa có tiết học nào để xóa.`);
+      return;
+    }
+    const confirmed = confirm(
+      `Xác nhận xóa TOÀN BỘ ${weekScheduleCount} tiết học của Lớp ${className} trong Tuần ${currentWeek.weekNumber} ` +
+      `(${fmtDDMM(currentWeek.start)} - ${fmtDDMMYYYY(currentWeek.end)})? Hành động này không thể hoàn tác.`
+    );
+    if (!confirmed) return;
+    setDeletingWeek(true);
+    try {
+      const res = await axiosClient.delete<{ deletedCount: number }>("/schedule/week", {
+        params: { classId: Number(filters.classId), weekStart: toDateKey(currentWeek.start) },
+      });
+      alert(`Đã xóa ${res.data.deletedCount} tiết học của Tuần ${currentWeek.weekNumber}.`);
+      loadSchedule();
+    } catch (err) {
+      const axiosErr = err as AxiosError<ApiErrorResponse>;
+      alert(axiosErr.response?.data?.message || "Có lỗi xảy ra khi xóa lịch tuần này");
+    } finally {
+      setDeletingWeek(false);
+    }
+  }
+
   async function handleDelete(id: number) {
     if (!confirm("Xóa buổi học này?")) return;
     await axiosClient.delete(`/schedule/${id}`);
@@ -1517,6 +1554,11 @@ export default function ScheduleGrid() {
         {isAdmin && currentWeek && (
           <button type="button" disabled={autoScheduling} onClick={handleAutoSchedule}>
             {autoScheduling ? "Đang tự động xếp..." : "🤖 Tự động xếp lịch tuần này"}
+          </button>
+        )}
+        {isAdmin && currentWeek && (
+          <button type="button" className="btn-danger" disabled={deletingWeek} onClick={handleDeleteWeek}>
+            {deletingWeek ? "Đang xóa..." : "🗑 Xóa lịch tuần này"}
           </button>
         )}
       </div>

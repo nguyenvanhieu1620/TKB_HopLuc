@@ -79,6 +79,10 @@
   .data-table tbody tr.row-warning {
     @apply bg-amber-50 text-amber-700 hover:bg-amber-100;
   }
+  /* Việc BL: nút hành động phá hủy (xóa hàng loạt) — màu đỏ cảnh báo, phân biệt với nút thường. */
+  .btn-danger {
+    @apply bg-danger text-white;
+  }
 
   /* ===== Calendar view (Thời khóa biểu dạng lịch theo tuần trong học kỳ) ===== */
   .calendar-toolbar { @apply flex justify-between items-center mb-3 flex-wrap gap-2.5; }

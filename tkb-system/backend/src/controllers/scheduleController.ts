@@ -927,6 +927,53 @@ export async function copyWeek(req: AuthRequest, res: Response, next: NextFuncti
   }
 }
 
+// Việc BL: xóa TOÀN BỘ Schedule (tiết học thường) của 1 Lớp trong đúng 1 tuần (Thứ 2 - Chủ nhật, tính
+// từ weekStart) chỉ 1 lần bấm — hữu ích khi cần dọn sạch để xếp lại (đặc biệt lúc thử nghiệm thuật
+// toán tự động). CHỈ xóa Schedule — không động tới Exams (lịch thi vẫn xóa riêng qua trang Lịch thi
+// như bình thường, kể cả khi đã hiển thị chung trên lịch từ Việc BI). ScheduleTeachers tự xóa theo
+// ON DELETE CASCADE, không cần xóa tay (cùng cách cancelAutoScheduleRun đang làm).
+export async function deleteWeek(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { classId, weekStart } = req.query as Record<string, string | undefined>;
+    if (!classId || !weekStart) {
+      res.status(400).json({ message: "Thiếu classId hoặc weekStart" });
+      return;
+    }
+    const weekEnd = shiftDateStr(weekStart, 6);
+    const pool = await getPool();
+
+    const idsResult = await pool
+      .request()
+      .input("classId", sql.Int, classId)
+      .input("weekStart", sql.Date, weekStart)
+      .input("weekEnd", sql.Date, weekEnd)
+      .query<{ ScheduleId: number }>(`
+        SELECT ScheduleId FROM Schedule WHERE ClassId = @classId AND ScheduleDate BETWEEN @weekStart AND @weekEnd
+      `);
+    const scheduleIds = idsResult.recordset.map((r) => r.ScheduleId);
+    if (scheduleIds.length === 0) {
+      res.json({ deletedCount: 0 });
+      return;
+    }
+
+    await pool
+      .request()
+      .input("classId", sql.Int, classId)
+      .input("weekStart", sql.Date, weekStart)
+      .input("weekEnd", sql.Date, weekEnd)
+      .query(`DELETE FROM Schedule WHERE ClassId = @classId AND ScheduleDate BETWEEN @weekStart AND @weekEnd`);
+
+    await writeAuditLog({
+      userId: req.user!.userId, action: "Delete", tableName: "Schedule",
+      recordId: null, detail: { classId: Number(classId), weekStart, weekEnd, deletedCount: scheduleIds.length, scheduleIds },
+    });
+
+    res.json({ deletedCount: scheduleIds.length });
+  } catch (err) {
+    next(err);
+  }
+}
+
 interface GroupedScheduleGroup {
   groupLabel?: string;
   roomId?: number;
