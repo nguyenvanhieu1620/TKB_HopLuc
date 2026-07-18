@@ -982,6 +982,50 @@ export async function deleteWeek(req: AuthRequest, res: Response, next: NextFunc
   }
 }
 
+// Việc BS: xóa TOÀN BỘ Schedule (tiết học thường) của 1 Lớp trong CẢ 1 Kỳ (mọi tuần) chỉ 1 lần bấm —
+// hữu ích khi cần dọn sạch để xếp lại từ đầu (đặc biệt sau nhiều lần thử nghiệm thuật toán tự động).
+// Lọc thẳng theo Schedule.SemesterId (cách liên kết Schedule-Semester đã có sẵn, không cần suy theo
+// khoảng ngày StartDate-EndDate như deleteWeek phải làm vì không có cột Semester trực tiếp ở đó theo
+// tuần cụ thể). CHỈ xóa Schedule — không động tới Exams, cùng nguyên tắc deleteWeek ở trên.
+export async function deleteSemester(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { classId, semesterId } = req.query as Record<string, string | undefined>;
+    if (!classId || !semesterId) {
+      res.status(400).json({ message: "Thiếu classId hoặc semesterId" });
+      return;
+    }
+    const pool = await getPool();
+
+    const idsResult = await pool
+      .request()
+      .input("classId", sql.Int, classId)
+      .input("semesterId", sql.Int, semesterId)
+      .query<{ ScheduleId: number }>(`
+        SELECT ScheduleId FROM Schedule WHERE ClassId = @classId AND SemesterId = @semesterId
+      `);
+    const scheduleIds = idsResult.recordset.map((r) => r.ScheduleId);
+    if (scheduleIds.length === 0) {
+      res.json({ deletedCount: 0 });
+      return;
+    }
+
+    await pool
+      .request()
+      .input("classId", sql.Int, classId)
+      .input("semesterId", sql.Int, semesterId)
+      .query(`DELETE FROM Schedule WHERE ClassId = @classId AND SemesterId = @semesterId`);
+
+    await writeAuditLog({
+      userId: req.user!.userId, action: "Delete", tableName: "Schedule",
+      recordId: null, detail: { classId: Number(classId), semesterId: Number(semesterId), deletedCount: scheduleIds.length, scheduleIds },
+    });
+
+    res.json({ deletedCount: scheduleIds.length });
+  } catch (err) {
+    next(err);
+  }
+}
+
 interface GroupedScheduleGroup {
   groupLabel?: string;
   roomId?: number;

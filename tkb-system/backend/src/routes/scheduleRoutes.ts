@@ -7,10 +7,12 @@ const router = Router();
 
 router.get("/", authenticate, ctrl.list);
 router.get("/period-progress", authenticate, ctrl.periodProgressByClass);
-// Đặt TRƯỚC router.delete("/:id", ...) để Express không khớp nhầm "auto-generate"/"week" thành :id.
+// Đặt TRƯỚC router.delete("/:id", ...) để Express không khớp nhầm "auto-generate"/"week"/"semester"
+// thành :id.
 router.post("/auto-generate", authenticate, requireRole("Admin"), autoCtrl.generate);
 router.delete("/auto-generate/:runId", authenticate, requireRole("Admin"), autoCtrl.cancel);
 router.delete("/week", authenticate, requireRole("Admin"), ctrl.deleteWeek);
+router.delete("/semester", authenticate, requireRole("Admin"), ctrl.deleteSemester);
 router.get("/:id", authenticate, ctrl.getById);
 router.post("/merged", authenticate, requireRole("Admin"), ctrl.mergedCreate);
 router.post("/grouped", authenticate, requireRole("Admin"), ctrl.groupedCreate);

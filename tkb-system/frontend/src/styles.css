@@ -83,6 +83,11 @@
   .btn-danger {
     @apply bg-danger text-white;
   }
+  /* Việc BS: nút phá hủy phạm vi LỚN HƠN (xóa cả Kỳ, không chỉ 1 tuần) — đỏ đậm hơn + viền để nổi
+     bật rõ mức độ nghiêm trọng cao hơn .btn-danger thường. */
+  .btn-danger-strong {
+    @apply bg-red-800 text-white border-2 border-red-950 hover:bg-red-900;
+  }
 
   /* ===== Calendar view (Thời khóa biểu dạng lịch theo tuần trong học kỳ) ===== */
   .calendar-toolbar { @apply flex justify-between items-center mb-3 flex-wrap gap-2.5; }

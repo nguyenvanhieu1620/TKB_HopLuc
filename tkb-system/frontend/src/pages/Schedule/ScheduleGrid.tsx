@@ -358,6 +358,9 @@ export default function ScheduleGrid() {
   // Việc BL: xóa toàn bộ Schedule của Lớp đang chọn trong đúng Tuần đang xem — chỉ 1 lần bấm, hữu ích
   // để dọn sạch xếp lại (đặc biệt lúc thử thuật toán tự động).
   const [deletingWeek, setDeletingWeek] = useState(false);
+  // Việc BS: xóa toàn bộ Schedule của Lớp đang chọn trong CẢ Kỳ đang xem (mọi tuần) — phạm vi lớn hơn
+  // nhiều so với "Xóa lịch tuần này" nên yêu cầu gõ lại tên Kỳ để xác nhận, tránh bấm nhầm.
+  const [deletingSemester, setDeletingSemester] = useState(false);
 
   const [selectedWeekIndex, setSelectedWeekIndex] = useState(0);
 
@@ -1126,6 +1129,46 @@ export default function ScheduleGrid() {
     }
   }
 
+  // Việc BS: xóa toàn bộ Schedule (tiết học thường) của Lớp đang chọn trong CẢ Kỳ đang xem (mọi tuần)
+  // — CHỈ Schedule, không động tới Exams, cùng nguyên tắc handleDeleteWeek ở trên. Phạm vi lớn hơn
+  // nhiều nên yêu cầu gõ lại chính xác tên Kỳ như 1 bước xác nhận phụ, tránh bấm nhầm hủy nhiều dữ
+  // liệu — `rows` lúc này đã lọc đúng theo filters.classId + filters.semesterId (xem loadSchedule).
+  async function handleDeleteSemester() {
+    if (!filters.classId || !selectedSemester) return;
+    const className = classes.find((c) => String(c.ClassId) === filters.classId)?.ClassName ?? `Lớp #${filters.classId}`;
+    const semesterScheduleCount = rows.length;
+    if (semesterScheduleCount === 0) {
+      alert(`Kỳ ${selectedSemester.SemesterName} của Lớp ${className} chưa có tiết học nào để xóa.`);
+      return;
+    }
+    const confirmed = confirm(
+      `Xác nhận xóa TOÀN BỘ ${semesterScheduleCount} tiết học của Lớp ${className} trong CẢ KỲ ${selectedSemester.SemesterName}? ` +
+      `Hành động này KHÔNG THỂ HOÀN TÁC và sẽ xóa dữ liệu của TẤT CẢ các tuần đã xếp.`
+    );
+    if (!confirmed) return;
+
+    const typed = prompt(`Để xác nhận, gõ lại CHÍNH XÁC tên Kỳ để tiếp tục xóa: "${selectedSemester.SemesterName}"`);
+    if (typed === null) return;
+    if (typed.trim() !== selectedSemester.SemesterName) {
+      alert("Tên Kỳ gõ lại không khớp — đã hủy thao tác xóa để đảm bảo an toàn.");
+      return;
+    }
+
+    setDeletingSemester(true);
+    try {
+      const res = await axiosClient.delete<{ deletedCount: number }>("/schedule/semester", {
+        params: { classId: Number(filters.classId), semesterId: Number(filters.semesterId) },
+      });
+      alert(`Đã xóa ${res.data.deletedCount} tiết học của Kỳ ${selectedSemester.SemesterName}.`);
+      loadSchedule();
+    } catch (err) {
+      const axiosErr = err as AxiosError<ApiErrorResponse>;
+      alert(axiosErr.response?.data?.message || "Có lỗi xảy ra khi xóa lịch cả Kỳ");
+    } finally {
+      setDeletingSemester(false);
+    }
+  }
+
   async function handleDelete(id: number) {
     if (!confirm("Xóa buổi học này?")) return;
     await axiosClient.delete(`/schedule/${id}`);
@@ -1588,6 +1631,11 @@ export default function ScheduleGrid() {
         {isAdmin && currentWeek && (
           <button type="button" className="btn-danger" disabled={deletingWeek} onClick={handleDeleteWeek}>
             {deletingWeek ? "Đang xóa..." : "🗑 Xóa lịch tuần này"}
+          </button>
+        )}
+        {isAdmin && selectedSemester && (
+          <button type="button" className="btn-danger-strong" disabled={deletingSemester} onClick={handleDeleteSemester}>
+            {deletingSemester ? "Đang xóa..." : "🗑🗑 Xóa lịch cả Kỳ"}
           </button>
         )}
       </div>
