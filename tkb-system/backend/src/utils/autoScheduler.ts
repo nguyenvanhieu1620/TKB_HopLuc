@@ -127,6 +127,11 @@ interface PlaceBlockParams {
   // Việc BN: true khi block này là Lâm sàng (roomCategory === "LamSang") — dùng để loại Ca Tối khỏi
   // danh sách Ca khả dụng (vấn đề 1), độc lập với checkTrainingModeRule.
   isClinical?: boolean;
+  // Giới hạn tối đa/buổi bình thường (MaxTheoryHoursPerSession/MaxPracticeHoursPerSession) — dùng để
+  // nhận diện block "ghép buổi cuối" của computeBlockPlan (Thực hành/Lâm sàng, dư 1 tiết): khi
+  // periods === maxPerSession + 1 ĐÚNG BẰNG giá trị này, đây là ngoại lệ có chủ đích (không phải lỗi),
+  // nên BỎ QUA checkSessionLength cho riêng trường hợp này thay vì bị chặn cứng như buổi thường.
+  maxPerSession: number;
 }
 
 // Việc BM (vấn đề 2): 1 buổi (1 Ngày + 1 Ca cụ thể) của 1 Lớp — buổi KHÔNG tách nhóm (groupLabel
@@ -252,8 +257,13 @@ async function tryPlaceSingleBlock(ctx: RunContext, params: PlaceBlockParams): P
     // gọi 1 LẦN bằng phòng đại diện thay vì lặp lại cho từng phòng × từng GV, tránh hàng chục
     // nghìn lệnh gọi DB thừa khi khung Kỳ dài và có nhiều Phòng/GV khả dĩ.
     const representativeRoomId = params.eligibleRoomIds[0];
-    const sessionLengthCheck = await checkSessionLength({ roomId: representativeRoomId, startTime: session.StartTime, endTime });
-    if (sessionLengthCheck.violated) continue;
+    // Ngoại lệ "ghép buổi cuối" (xem ghi chú maxPerSession ở PlaceBlockParams) — buổi Thực hành/Lâm
+    // sàng đúng bằng maxPerSession + 1 tiết được PHÉP vượt giới hạn thường, bỏ qua checkSessionLength.
+    const isMergedExceptionBlock = params.sessionType === "Practice" && params.periods === params.maxPerSession + 1;
+    if (!isMergedExceptionBlock) {
+      const sessionLengthCheck = await checkSessionLength({ roomId: representativeRoomId, startTime: session.StartTime, endTime });
+      if (sessionLengthCheck.violated) continue;
+    }
 
     const dailyHoursCheck = await checkDailyHoursLimit({
       classId: ctx.classId, scheduleDate: date, roomId: representativeRoomId, startTime: session.StartTime, endTime,
@@ -339,14 +349,39 @@ async function tryPlaceGroupSplitBlock(ctx: RunContext, params: PlaceGroupSplitP
   return { success: true };
 }
 
+// Chia `total` tiết còn thiếu của 1 môn (Lý thuyết hoặc Thực hành/Lâm sàng) thành dãy các block
+// (buổi) — tính TRỌN VẸN 1 LẦN cho toàn bộ phần còn lại của môn (không tính lại từng buổi riêng lẻ),
+// để tránh buổi cuối cùng lệch quá nhiều so với các buổi khác:
+// - Lý thuyết (mode="theory", max=5): nếu total chia max dư ĐÚNG 1 (vd 16 = 3×5+1) → KHÔNG tách
+//   riêng buổi cuối 1 tiết, mà CHIA ĐỀU total ra đúng ceil(total/max) buổi (vd 16 → 4,4,4,4). Dư 0/2/3/4
+//   giữ nguyên cách chia thông thường (max,max,...,phần dư).
+// - Thực hành/Lâm sàng (mode="practice", max=4): nếu total chia max dư ĐÚNG 1 (vd 13 = 3×4+1) → GHÉP
+//   phần dư 1 tiết đó vào buổi liền trước (vượt max, thành max+1 — ngoại lệ có chủ đích), vd 13 →
+//   4,4,5 thay vì 4,4,4,1. Dư 0/2/3 giữ nguyên cách chia thông thường.
+function computeBlockPlan(total: number, max: number, mode: "theory" | "practice"): number[] {
+  if (total <= 0) return [];
+  const numBlocks = Math.ceil(total / max);
+  if (numBlocks <= 1) return [total];
+  const remainder = total % max;
+  if (remainder === 1) {
+    if (mode === "theory") {
+      const base = Math.floor(total / numBlocks);
+      const extra = total - base * numBlocks;
+      return Array.from({ length: numBlocks }, (_, i) => base + (i < extra ? 1 : 0));
+    }
+    return [...Array(numBlocks - 2).fill(max), max + 1];
+  }
+  return [...Array(numBlocks - 1).fill(max), total - max * (numBlocks - 1)];
+}
+
 // Xử lý 1 phần (Lý thuyết hoặc Thực hành) của 1 môn TRONG TUẦN đang xét: tính nhóm phòng, sĩ số/
 // nhóm, rồi lặp xếp từng block trong khung tuần (ctx.rangeStart..ctx.rangeEnd).
 //
-// - KÍCH THƯỚC 1 block luôn tính từ `wholeRemaining` (phần còn thiếu CẢ MÔN, không phải chỉ tiêu
-//   tuần) — blockSize = MIN(phần còn lại CẢ MÔN tại thời điểm đó, giới hạn tối đa/buổi) — để luôn cố
-//   xếp TRỌN VẸN tối đa cho phép/buổi, không chia nhỏ theo chỉ tiêu tuần (Lỗi 2). Nếu kích thước đó
-//   không đặt được ở đâu trong tuần, giảm dần để thử, nhưng KHÔNG giảm xuống dưới 2 tiết trừ khi phần
-//   còn lại CẢ MÔN tại lượt lặp đó đúng bằng 1 — tránh tạo buổi lẻ tẻ 1 tiết không cần thiết.
+// - KÍCH THƯỚC từng block lấy TỪ TRƯỚC theo `computeBlockPlan(wholeRemaining, ...)` (tính 1 lần cho
+//   toàn bộ phần còn thiếu CẢ MÔN, không phải chỉ tiêu tuần) — để luôn cố xếp TRỌN VẸN tối đa cho
+//   phép/buổi mà không tạo buổi cuối lệch bất hợp lý (Lý thuyết chia đều khi dư 1; Thực hành ghép buổi
+//   cuối khi dư 1). Nếu kích thước đó không đặt được ở đâu trong tuần, giảm dần để thử, nhưng KHÔNG
+//   giảm xuống dưới 2 tiết trừ khi block đó vốn đã là 1 tiết (chỉ xảy ra khi total còn lại đúng 1).
 // - VÒNG LẶP (bao nhiêu block/buổi xếp trong 1 lần chạy tuần này) dừng khi đạt `quotaThisWeek` (chỉ
 //   tiêu tuần, có thể xếp NHỈNH hơn 1 chút vì block cuối luôn xếp trọn vẹn, không cắt giữa chừng) HOẶC
 //   khi môn đã xếp xong hoàn toàn — để các môn khác trong cùng tuần vẫn còn slot mà xếp, không bị 1
@@ -396,17 +431,23 @@ async function processSubjectPart(
     groupCount = classSize > capacityLimit ? Math.ceil(classSize / capacityLimit) : 1;
   }
 
+  const blockPlan = computeBlockPlan(wholeRemaining, maxPerSession, sessionType === "Theory" ? "theory" : "practice");
   let scheduled = 0;
   let left = wholeRemaining;
+  let planIndex = 0;
   while (scheduled < quotaThisWeek && left > 0) {
-    let blockSize = Math.min(left, maxPerSession);
-    const minBlockSize = left === 1 ? 1 : 2;
+    // Hết block đã hoạch định trước (computeBlockPlan) nhưng vẫn còn thiếu tiết — xảy ra khi 1 block
+    // trong kế hoạch phải co lại lúc đặt (vd ngoại lệ "ghép buổi 5 tiết Thực hành" không có Ca nào đủ
+    // dài để chứa, phải co xuống 4) khiến phần dư của block đó CHƯA được xếp. Dùng lại cách tính
+    // thông thường (MIN phần còn lại, giới hạn tối đa/buổi) để tiếp tục xếp nốt, không bỏ sót tiết.
+    let blockSize = planIndex < blockPlan.length ? blockPlan[planIndex] : Math.min(left, maxPerSession);
+    const minBlockSize = blockSize === 1 ? 1 : 2;
     let placed = false;
     while (blockSize >= minBlockSize) {
       const params: PlaceBlockParams = {
         subjectId: task.subjectId, sessionType, periods: blockSize, periodMinutes,
         eligibleRoomIds, teacherIds: task.teacherIds, totalStudents: classSize,
-        isClinical: roomCategory === "LamSang",
+        isClinical: roomCategory === "LamSang", maxPerSession,
       };
       const result = groupCount > 1
         ? await tryPlaceGroupSplitBlock(ctx, { ...params, groupCount })
@@ -423,6 +464,7 @@ async function processSubjectPart(
       const label = sessionType === "Theory" ? "Lý thuyết" : "Thực hành";
       return { scheduled, failureReason: `Hết slot hợp lệ trong Tuần này cho phần ${label} — còn thiếu ${left} tiết` };
     }
+    planIndex++;
   }
   return { scheduled };
 }
