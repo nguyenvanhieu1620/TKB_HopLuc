@@ -170,13 +170,13 @@ async function isSlotOccupied(classId: number, date: string, session: SessionRow
 
 interface DateSessionSlot { date: string; session: SessionRow; }
 
-// Việc BO: thứ tự ưu tiên ĐẦY ĐỦ khi sinh danh sách (Ngày, Ca) khả dụng trong tuần cho Lớp kiểu Liên
-// thông — thay thế hoàn toàn cách sắp "cuối tuần trước, tối sau" đơn giản ở bản trước (Việc BN), dùng
-// bản này làm chuẩn cuối cùng. Từ ưu tiên cao xuống thấp:
+// Việc BQ: thứ tự ưu tiên ĐẦY ĐỦ khi sinh danh sách (Ngày, Ca) khả dụng trong tuần cho Lớp kiểu Liên
+// thông — THAY THẾ HOÀN TOÀN mọi bản thứ tự ưu tiên đã gửi trước đây (Việc BN, Việc BO), dùng bản này
+// làm chuẩn CUỐI CÙNG. Từ ưu tiên cao xuống thấp:
 //   1. Thứ 7 Sáng, Thứ 7 Chiều, Chủ nhật Sáng, Chủ nhật Chiều
 //   2. Tối Thứ 5, Tối Thứ 6 (chỉ dùng khi nhóm 1 đã hết chỗ)
-//   3. Tối Thứ 2, Tối Thứ 3, Tối Thứ 4 (chỉ dùng khi nhóm 1+2 đã hết chỗ)
-//   4. Tối Thứ 7 (phương án CUỐI CÙNG, chỉ dùng khi nhóm 1+2+3 đều đã hết chỗ)
+//   3. Tối Thứ 7 (chỉ dùng khi nhóm 1+2 đã hết chỗ)
+//   4. Tối Thứ 2, Tối Thứ 3, Tối Thứ 4 (phương án CUỐI CÙNG, chỉ dùng khi nhóm 1+2+3 đều đã hết chỗ)
 // Tối Chủ nhật KHÔNG BAO GIỜ đưa vào danh sách. Thứ 2-6 Sáng/Chiều cũng không đưa vào — chưa từng hợp
 // lệ với hệ Liên thông theo checkTrainingModeRule, đưa vào chỉ tốn vòng lặp thử vô ích.
 // weekday: 0=CN,1=T2,2=T3,3=T4,4=T5,5=T6,6=T7 (cùng quy ước getWeekday).
@@ -196,8 +196,8 @@ function buildLTPrioritySlots(dates: string[], availableSessions: SessionRow[]):
   return [
     ...slotsForWeekdays([6, 0], nonToiSessions), // 1. T7 Sáng/Chiều, CN Sáng/Chiều
     ...slotsForWeekdays([4, 5], toiSessions),    // 2. Tối T5, Tối T6
-    ...slotsForWeekdays([1, 2, 3], toiSessions), // 3. Tối T2, T3, T4
-    ...slotsForWeekdays([6], toiSessions),       // 4. Tối T7
+    ...slotsForWeekdays([6], toiSessions),       // 3. Tối T7
+    ...slotsForWeekdays([1, 2, 3], toiSessions), // 4. Tối T2, T3, T4
     // Tối CN (weekday 0, toiSessions) cố tình KHÔNG đưa vào.
   ];
 }
