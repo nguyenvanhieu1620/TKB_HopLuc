@@ -479,6 +479,19 @@ export default function ScheduleGrid() {
     [groupCurriculumSubjectInfo, groupForm.subjectId]
   );
 
+  // Việc BR: Phòng Thực hành/Lâm sàng cụ thể đã gán riêng cho môn đang chọn (SubjectRooms) — rỗng =
+  // môn chưa cấu hình riêng, dropdown Phòng vẫn hiện theo loại phòng chung như trước. Chỉ nạp cho
+  // form thường và form Tách nhóm (Ghép lớp không thuộc phạm vi tính năng này, giống backend).
+  const [formSubjectRoomIds, setFormSubjectRoomIds] = useState<number[]>([]);
+  const [groupSubjectRoomIds, setGroupSubjectRoomIds] = useState<number[]>([]);
+  async function loadSubjectRoomIds(subjectId: string): Promise<number[]> {
+    if (!subjectId) return [];
+    const res = await axiosClient.get<{ RoomId: number }[]>(`/subjects/${subjectId}/rooms`);
+    return res.data.map((r) => r.RoomId);
+  }
+  useEffect(() => { loadSubjectRoomIds(form.subjectId).then(setFormSubjectRoomIds); }, [form.subjectId]);
+  useEffect(() => { loadSubjectRoomIds(groupForm.subjectId).then(setGroupSubjectRoomIds); }, [groupForm.subjectId]);
+
   // Việc AS: tính EndTime theo Số tiết thực tế thay vì lấp đầy cả Ca — mỗi form tra Phòng/Ca
   // đang chọn của chính nó (form tách nhóm dùng Phòng của Nhóm 1 làm đại diện, giống cách
   // scheduleController tính sessionLengthCheck ở backend).
@@ -510,18 +523,30 @@ export default function ScheduleGrid() {
   // Việc AW/BA: dropdown Phòng chỉ hiện phòng thuộc đúng nhóm RoomType tương ứng — nhóm này nay
   // phụ thuộc CẢ PracticeMode của môn lẫn SessionType đã chọn (roomCategoryFor), không chỉ suy
   // thẳng từ SessionType như trước.
-  const formRoomsForType = useMemo(
-    () => rooms.filter((r) => ROOM_TYPES_BY_CATEGORY[roomCategoryFor(formPracticeMode, form.sessionType)]?.includes(r.RoomType)),
-    [rooms, formPracticeMode, form.sessionType]
-  );
+  // Việc BR: buổi Thực hành ("Practice") — nếu môn đã gán riêng Phòng phù hợp (SubjectRooms), CHỈ
+  // hiện đúng các phòng đó (vẫn giao với đúng loại phòng ở trên để không lọt phòng sai loại nếu lỡ
+  // gán nhầm). Môn chưa cấu hình (subjectRoomIds rỗng) giữ nguyên lọc theo loại phòng chung như cũ.
+  const formRoomsForType = useMemo(() => {
+    const byType = rooms.filter((r) => ROOM_TYPES_BY_CATEGORY[roomCategoryFor(formPracticeMode, form.sessionType)]?.includes(r.RoomType));
+    if (form.sessionType === "Practice" && formSubjectRoomIds.length > 0) {
+      return byType.filter((r) => formSubjectRoomIds.includes(r.RoomId));
+    }
+    return byType;
+  }, [rooms, formPracticeMode, form.sessionType, formSubjectRoomIds]);
+  const formSubjectRoomHint = form.subjectId && form.sessionType === "Practice" && formSubjectRoomIds.length === 0;
+
   const mergeRoomsForType = useMemo(
     () => rooms.filter((r) => ROOM_TYPES_BY_CATEGORY[roomCategoryFor(mergePracticeMode, mergeForm.sessionType)]?.includes(r.RoomType)),
     [rooms, mergePracticeMode, mergeForm.sessionType]
   );
-  const groupRoomsForType = useMemo(
-    () => rooms.filter((r) => ROOM_TYPES_BY_CATEGORY[roomCategoryFor(groupPracticeMode, groupForm.sessionType)]?.includes(r.RoomType)),
-    [rooms, groupPracticeMode, groupForm.sessionType]
-  );
+  const groupRoomsForType = useMemo(() => {
+    const byType = rooms.filter((r) => ROOM_TYPES_BY_CATEGORY[roomCategoryFor(groupPracticeMode, groupForm.sessionType)]?.includes(r.RoomType));
+    if (groupForm.sessionType === "Practice" && groupSubjectRoomIds.length > 0) {
+      return byType.filter((r) => groupSubjectRoomIds.includes(r.RoomId));
+    }
+    return byType;
+  }, [rooms, groupPracticeMode, groupForm.sessionType, groupSubjectRoomIds]);
+  const groupSubjectRoomHint = groupForm.subjectId && groupForm.sessionType === "Practice" && groupSubjectRoomIds.length === 0;
 
   // Gợi ý tách nhóm: sĩ số lớp vượt giới hạn/ca của loại phòng đang chọn ở form xếp lịch thường.
   // Việc BH: Thực hành/Lâm sàng dùng bảng mốc cố định getRequiredGroupCount (không còn so trực tiếp
@@ -1274,6 +1299,7 @@ export default function ScheduleGrid() {
                 <option value="">{form.sessionType ? "Phòng" : "-- Chọn Loại buổi học trước --"}</option>
                 {formRoomsForType.map((r) => <option key={r.RoomId} value={r.RoomId}>{r.RoomName}</option>)}
               </select>
+              {formSubjectRoomHint && <div className="hint mt-1">Môn này chưa gán phòng cụ thể, đang hiện theo loại phòng chung.</div>}
               {capacityHint && <div className="error-text mt-1">{capacityHint}</div>}
             </div>
             <div>
@@ -1478,11 +1504,14 @@ export default function ScheduleGrid() {
                     <input type="number" min={1} placeholder="Số tiết" value={g.periodCount} className="mt-1 w-full"
                       onChange={(e) => updateGroupRow(idx, { periodCount: e.target.value })} required />
                   </div>
-                  <select value={g.roomId} onChange={(e) => updateGroupRow(idx, { roomId: e.target.value })}
-                    required disabled={!groupForm.sessionType}>
-                    <option value="">{groupForm.sessionType ? "Phòng" : "-- Chọn Loại buổi học trước --"}</option>
-                    {groupRoomsForType.map((r) => <option key={r.RoomId} value={r.RoomId}>{r.RoomName}</option>)}
-                  </select>
+                  <div>
+                    <select value={g.roomId} onChange={(e) => updateGroupRow(idx, { roomId: e.target.value })}
+                      required disabled={!groupForm.sessionType}>
+                      <option value="">{groupForm.sessionType ? "Phòng" : "-- Chọn Loại buổi học trước --"}</option>
+                      {groupRoomsForType.map((r) => <option key={r.RoomId} value={r.RoomId}>{r.RoomName}</option>)}
+                    </select>
+                    {groupSubjectRoomHint && <div className="hint mt-1">Môn này chưa gán phòng cụ thể, đang hiện theo loại phòng chung.</div>}
+                  </div>
                   <select multiple value={g.teacherIds}
                     onChange={(e) => updateGroupRow(idx, { teacherIds: [...e.target.selectedOptions].map((o) => o.value) })}>
                     {teachers.map((t) => <option key={t.TeacherId} value={t.TeacherId}>{t.FullName}</option>)}

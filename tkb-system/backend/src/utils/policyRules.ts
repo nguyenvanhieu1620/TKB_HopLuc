@@ -126,6 +126,56 @@ export async function checkRoomCapacity({ roomId, totalStudents, isGroupSplit }:
   return { violated: false };
 }
 
+// Việc BR: danh sách RoomId đã gán riêng cho 1 môn (rỗng = chưa cấu hình, dùng phương án dự phòng
+// lọc theo RoomType chung) — export để autoScheduler.ts lọc eligibleRoomIds, tránh viết lại truy vấn.
+export async function getSubjectRoomIds(subjectId: number): Promise<number[]> {
+  const pool = await getPool();
+  const result = await pool
+    .request()
+    .input("subjectId", sql.Int, subjectId)
+    .query<{ RoomId: number }>(`SELECT RoomId FROM SubjectRooms WHERE SubjectId = @subjectId`);
+  return result.recordset.map((r) => r.RoomId);
+}
+
+interface SubjectRoomCheckParams {
+  subjectId: number;
+  roomId: number;
+  sessionType?: string | null;
+}
+interface SubjectRoomCheckResult {
+  violated: boolean;
+  message?: string;
+}
+
+// Việc BR: Môn học có thể gán riêng danh sách Phòng Thực hành/Lâm sàng CỤ THỂ (bảng SubjectRooms) —
+// nếu môn ĐÃ có ít nhất 1 dòng trong SubjectRooms, phòng chọn để xếp PHẢI nằm trong đúng danh sách đó
+// (không được chọn phòng khác dù cùng loại RoomType). Môn CHƯA cấu hình (0 dòng, đa số 285 môn hiện
+// tại) — coi như chưa ràng buộc riêng, KHÔNG chặn gì thêm ở đây, dùng phương án dự phòng lọc theo
+// RoomType chung như trước (ROOM_TYPES_BY_CATEGORY). CHỈ áp dụng cho buổi Thực hành/Lâm sàng
+// (sessionType === "Practice") — Lý thuyết không thuộc phạm vi tính năng này.
+export async function checkSubjectRoom({ subjectId, roomId, sessionType }: SubjectRoomCheckParams): Promise<SubjectRoomCheckResult> {
+  if (sessionType !== "Practice") return { violated: false };
+
+  const pool = await getPool();
+  const assignedResult = await pool
+    .request()
+    .input("subjectId", sql.Int, subjectId)
+    .query<{ RoomId: number; RoomName: string }>(`
+      SELECT sr.RoomId, r.RoomName FROM SubjectRooms sr
+      INNER JOIN Rooms r ON r.RoomId = sr.RoomId
+      WHERE sr.SubjectId = @subjectId
+    `);
+  if (assignedResult.recordset.length === 0) return { violated: false };
+
+  if (assignedResult.recordset.some((r) => r.RoomId === roomId)) return { violated: false };
+
+  const roomNames = assignedResult.recordset.map((r) => r.RoomName).join(", ");
+  return {
+    violated: true,
+    message: `Môn học này chỉ được xếp ở phòng đã gán riêng: ${roomNames} — chọn đúng phòng đã gán cho môn`,
+  };
+}
+
 export type SessionCategory = "LyThuyet" | "ThucHanh";
 
 // Việc AV: LyThuyet/SanBai tính là Lý thuyết; ThucHanh/Labo/LamSang tính là Thực hành — đồng bộ

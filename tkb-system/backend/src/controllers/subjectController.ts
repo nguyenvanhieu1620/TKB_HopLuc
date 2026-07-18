@@ -201,6 +201,53 @@ export async function update(req: AuthRequest, res: Response, next: NextFunction
   }
 }
 
+// Việc BR: Phòng Thực hành/Lâm sàng cụ thể phù hợp với môn học (n-n, bảng SubjectRooms) — cùng
+// pattern delete-then-insert-all đã dùng cho TeacherSubjects (teacherController.ts), không định
+// nghĩa lại cách khác.
+export async function getRooms(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { id } = req.params;
+    const pool = await getPool();
+    const result = await pool
+      .request()
+      .input("id", sql.Int, id)
+      .query<{ RoomId: number; RoomName: string; RoomType: string }>(`
+        SELECT r.RoomId, r.RoomName, r.RoomType
+        FROM SubjectRooms sr
+        INNER JOIN Rooms r ON r.RoomId = sr.RoomId
+        WHERE sr.SubjectId = @id
+        ORDER BY r.RoomName
+      `);
+    res.json(result.recordset);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function updateRooms(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { id } = req.params;
+    const { roomIds } = req.body as { roomIds?: number[] };
+    if (!Array.isArray(roomIds)) {
+      res.status(400).json({ message: "Thiếu danh sách phòng" });
+      return;
+    }
+
+    const pool = await getPool();
+    await pool.request().input("id", sql.Int, id).query(`DELETE FROM SubjectRooms WHERE SubjectId = @id`);
+    for (const roomId of roomIds) {
+      await pool
+        .request()
+        .input("subjectId", sql.Int, id)
+        .input("roomId", sql.Int, roomId)
+        .query(`INSERT INTO SubjectRooms (SubjectId, RoomId) VALUES (@subjectId, @roomId)`);
+    }
+    res.json({ message: "Đã cập nhật" });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function remove(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   try {
     const { id } = req.params;

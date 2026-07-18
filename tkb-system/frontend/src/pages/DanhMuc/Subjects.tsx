@@ -1,6 +1,6 @@
 import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
 import axiosClient from "../../api/axiosClient";
-import { Subject, Faculty, Major, BulkImportResult, ApiErrorResponse } from "../../types";
+import { Subject, Faculty, Major, Room, BulkImportResult, ApiErrorResponse } from "../../types";
 import { AxiosError } from "axios";
 import { readWorkbook, sheetToRows, buildWorkbook, downloadWorkbook } from "../../../utils/excel";
 import { normalizeText } from "../../../utils/text";
@@ -16,12 +16,20 @@ interface SubjectForm {
   examHours: string;
   category: string;
   isActive: boolean;
+  // Việc BR: Phòng Thực hành/Lâm sàng cụ thể phù hợp với môn này — rỗng = chưa cấu hình riêng (khi
+  // xếp lịch sẽ cho chọn mọi phòng đúng loại RoomType như trước, xem checkSubjectRoom backend).
+  roomIds: string[];
 }
 
 const emptyForm: SubjectForm = {
   subjectCode: "", subjectName: "", facultyId: "", majorId: "", credits: "", theoryHours: "", practiceHours: "", examHours: "",
-  category: "", isActive: true,
+  category: "", isActive: true, roomIds: [],
 };
+
+// Việc BR: chỉ các loại phòng liên quan Thực hành/Lâm sàng mới cần gán riêng — Lý thuyết không thuộc
+// phạm vi tính năng này (checkSubjectRoom backend chỉ áp dụng khi sessionType === "Practice").
+const PRACTICE_ROOM_TYPES = ["ThucHanh", "Labo", "LamSang"];
+const ROOM_TYPE_LABEL: Record<string, string> = { ThucHanh: "Thực hành", Labo: "Labo", LamSang: "Lâm sàng" };
 
 // Phân loại môn theo khối kiến thức — dùng để ưu tiên thứ tự xử lý môn khi tự động xếp lịch (Đại
 // cương xếp trước, rồi Cơ sở ngành, rồi Chuyên ngành). Mã nội bộ không dấu, nhãn tiếng Việt ở UI —
@@ -130,6 +138,7 @@ export default function Subjects() {
   const [items, setItems] = useState<Subject[]>([]);
   const [faculties, setFaculties] = useState<Faculty[]>([]);
   const [majors, setMajors] = useState<Major[]>([]);
+  const [rooms, setRooms] = useState<Room[]>([]);
   const [form, setForm] = useState<SubjectForm>(emptyForm);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [error, setError] = useState("");
@@ -137,6 +146,9 @@ export default function Subjects() {
   const [trainingModeFilter, setTrainingModeFilter] = useState("");
   const [majorFilter, setMajorFilter] = useState("");
   const [facultyFilter, setFacultyFilter] = useState("");
+  // Việc BR: mặc định chỉ gợi ý phòng CÙNG Khoa với môn đang sửa cho dễ chọn — bật cờ này để hiện
+  // thêm phòng ở Khoa khác (vẫn cho chọn tự do nếu cần).
+  const [showAllFacultyRooms, setShowAllFacultyRooms] = useState(false);
 
   const [showImport, setShowImport] = useState(false);
   const [importRows, setImportRows] = useState<ImportRow[]>([]);
@@ -145,12 +157,14 @@ export default function Subjects() {
   const [importResultDetails, setImportResultDetails] = useState<string[]>([]);
 
   async function loadLookups() {
-    const [facultyRes, majorRes] = await Promise.all([
+    const [facultyRes, majorRes, roomRes] = await Promise.all([
       axiosClient.get<Faculty[]>("/faculties"),
       axiosClient.get<Major[]>("/majors"),
+      axiosClient.get<Room[]>("/rooms"),
     ]);
     setFaculties(facultyRes.data);
     setMajors(majorRes.data);
+    setRooms(roomRes.data);
   }
   useEffect(() => { loadLookups(); }, []);
 
@@ -180,6 +194,7 @@ export default function Subjects() {
   function resetForm() {
     setForm(emptyForm);
     setEditingId(null);
+    setShowAllFacultyRooms(false);
   }
 
   async function handleSubmit(e: FormEvent) {
@@ -206,11 +221,16 @@ export default function Subjects() {
       isActive: form.isActive,
     };
     try {
+      let subjectId = editingId;
       if (editingId) {
         await axiosClient.put(`/subjects/${editingId}`, payload);
       } else {
-        await axiosClient.post("/subjects", payload);
+        const res = await axiosClient.post<{ subjectId: number }>("/subjects", payload);
+        subjectId = res.data.subjectId;
       }
+      // Việc BR: lưu danh sách Phòng Thực hành/Lâm sàng riêng cho môn (rỗng = xóa hết ràng buộc, quay
+      // về lọc theo loại phòng chung như trước).
+      await axiosClient.put(`/subjects/${subjectId}/rooms`, { roomIds: form.roomIds.map(Number) });
       resetForm();
       loadItems();
     } catch (err) {
@@ -219,8 +239,10 @@ export default function Subjects() {
     }
   }
 
-  function handleEdit(item: Subject) {
+  async function handleEdit(item: Subject) {
     setEditingId(item.SubjectId);
+    setShowAllFacultyRooms(false);
+    const roomsRes = await axiosClient.get<{ RoomId: number }[]>(`/subjects/${item.SubjectId}/rooms`);
     setForm({
       subjectCode: item.SubjectCode || "",
       subjectName: item.SubjectName,
@@ -232,8 +254,26 @@ export default function Subjects() {
       examHours: String(item.ExamHours),
       category: item.Category || "",
       isActive: item.IsActive,
+      roomIds: roomsRes.data.map((r) => String(r.RoomId)),
     });
   }
+
+  function toggleRoom(roomId: number) {
+    const key = String(roomId);
+    setForm((f) => ({
+      ...f,
+      roomIds: f.roomIds.includes(key) ? f.roomIds.filter((id) => id !== key) : [...f.roomIds, key],
+    }));
+  }
+
+  // Việc BR: mặc định chỉ gợi ý phòng Thực hành/Lâm sàng CÙNG Khoa với môn (dễ chọn hơn khi danh sách
+  // Phòng toàn trường dài) — luôn giữ lại phòng ĐÃ chọn dù khác Khoa, để không "mất" lựa chọn cũ khi
+  // đổi Khoa phụ trách sau khi đã gán phòng.
+  const pickableRooms = useMemo(() => {
+    const relevant = rooms.filter((r) => r.IsActive && PRACTICE_ROOM_TYPES.includes(r.RoomType));
+    if (showAllFacultyRooms || !form.facultyId) return relevant;
+    return relevant.filter((r) => String(r.FacultyId) === form.facultyId || form.roomIds.includes(String(r.RoomId)));
+  }, [rooms, form.facultyId, form.roomIds, showAllFacultyRooms]);
 
   async function handleDelete(id: number) {
     if (!confirm("Xóa môn học này?")) return;
@@ -478,6 +518,33 @@ export default function Subjects() {
             onChange={(e) => setForm({ ...form, isActive: e.target.checked })} />
           Đang sử dụng
         </label>
+
+        <div className="w-full">
+          <p className="hint mb-1">
+            Phòng Thực hành/Lâm sàng phù hợp với môn này (không bắt buộc) — nếu để trống, xếp lịch Thực
+            hành/Lâm sàng cho môn này vẫn cho chọn mọi phòng đúng loại như trước. Nếu chọn ít nhất 1
+            phòng ở đây, xếp lịch (cả xếp tay lẫn tự động) cho môn này sẽ CHỈ được chọn trong đúng danh
+            sách phòng đã chọn.
+          </p>
+          {form.facultyId && (
+            <label className="flex items-center gap-2 text-[13px] mb-1">
+              <input type="checkbox" checked={showAllFacultyRooms}
+                onChange={(e) => setShowAllFacultyRooms(e.target.checked)} />
+              Hiện cả phòng ở Khoa khác
+            </label>
+          )}
+          <div className="subject-picker-list">
+            {pickableRooms.length === 0 && <span className="hint">Không có phòng Thực hành/Lâm sàng nào phù hợp.</span>}
+            {pickableRooms.map((r) => (
+              <label key={r.RoomId} className="flex items-center gap-2">
+                <input type="checkbox" checked={form.roomIds.includes(String(r.RoomId))}
+                  onChange={() => toggleRoom(r.RoomId)} />
+                {r.RoomName} ({ROOM_TYPE_LABEL[r.RoomType] || r.RoomType})
+              </label>
+            ))}
+          </div>
+        </div>
+
         <button type="submit">{editingId ? "Cập nhật" : "Thêm mới"}</button>
         {editingId && <button type="button" onClick={resetForm}>Hủy</button>}
       </form>

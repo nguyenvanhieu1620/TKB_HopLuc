@@ -247,6 +247,19 @@ CREATE TABLE TeacherSubjects (
 );
 GO
 
+-- Việc BR: Phòng Thực hành/Lâm sàng cụ thể phù hợp với từng Môn học (n-n) — môn CHƯA có dòng nào ở
+-- đây coi như chưa cấu hình riêng, dùng phương án dự phòng lọc theo LOẠI phòng (RoomType) chung như
+-- trước (xem checkSubjectRoom trong policyRules.ts).
+CREATE TABLE SubjectRooms (
+    SubjectRoomId INT IDENTITY(1,1) PRIMARY KEY,
+    SubjectId     INT NOT NULL,
+    RoomId        INT NOT NULL,
+    CONSTRAINT FK_SubjectRooms_Subject FOREIGN KEY (SubjectId) REFERENCES Subjects(SubjectId),
+    CONSTRAINT FK_SubjectRooms_Room FOREIGN KEY (RoomId) REFERENCES Rooms(RoomId),
+    CONSTRAINT UQ_SubjectRooms UNIQUE (SubjectId, RoomId)
+);
+GO
+
 -- Khai báo khoảng thời gian giảng viên bận/nghỉ, không thể xếp lịch dạy
 CREATE TABLE TeacherUnavailability (
     UnavailabilityId INT IDENTITY(1,1) PRIMARY KEY,

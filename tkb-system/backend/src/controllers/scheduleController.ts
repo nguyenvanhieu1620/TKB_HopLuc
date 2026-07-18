@@ -2,7 +2,7 @@ import { Response, NextFunction } from "express";
 import { sql, getPool } from "../config/db";
 import { checkScheduleConflict, findHoliday, checkExamPeriodWarning } from "../utils/conflictCheck";
 import { checkTrainingModeRule, getClassTrainingMode } from "../utils/trainingModeCheck";
-import { checkRoomCapacity, checkSessionLength, checkDailyHoursLimit, checkTeacherWeeklyHours, checkTeacherYearlyHours, getClassSize, getTotalPeriodsForSubject, getPeriodTimelineForSubject, getRoomInfo, getRequiredGroupCount } from "../utils/policyRules";
+import { checkRoomCapacity, checkSessionLength, checkDailyHoursLimit, checkTeacherWeeklyHours, checkTeacherYearlyHours, getClassSize, getTotalPeriodsForSubject, getPeriodTimelineForSubject, getRoomInfo, getRequiredGroupCount, checkSubjectRoom } from "../utils/policyRules";
 import { writeAuditLog } from "../utils/auditLog";
 import { notifyTeachers } from "../utils/notify";
 import { AuthRequest } from "../types";
@@ -258,6 +258,14 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
     const capacityCheck = await checkRoomCapacity({ roomId, totalStudents: classSize });
     if (capacityCheck.violated) {
       res.status(400).json({ message: capacityCheck.message });
+      return;
+    }
+
+    // Việc BR: buổi Thực hành/Lâm sàng — nếu môn đã gán riêng danh sách phòng phù hợp (SubjectRooms),
+    // phòng chọn PHẢI nằm trong đúng danh sách đó. Môn chưa cấu hình thì bỏ qua (không chặn thêm).
+    const subjectRoomCheck = await checkSubjectRoom({ subjectId, roomId, sessionType });
+    if (subjectRoomCheck.violated) {
+      res.status(400).json({ message: subjectRoomCheck.message });
       return;
     }
 
@@ -1042,6 +1050,16 @@ export async function groupedCreate(req: AuthRequest, res: Response, next: NextF
           message: `${conflictMessage(conflict)} (nhóm "${group.groupLabel}")`,
           conflict,
         });
+        return;
+      }
+
+      // Việc BR: mỗi nhóm tự chọn Phòng riêng nên kiểm tra SubjectRooms theo ĐÚNG Phòng của TỪNG nhóm.
+      const subjectRoomCheck = await checkSubjectRoom({ subjectId, roomId: group.roomId!, sessionType });
+      if (subjectRoomCheck.violated) {
+        for (const scheduleId of scheduleIds) {
+          await pool.request().input("id", sql.Int, scheduleId).query(`DELETE FROM Schedule WHERE ScheduleId=@id`);
+        }
+        res.status(400).json({ message: `${subjectRoomCheck.message} (nhóm "${group.groupLabel}")` });
         return;
       }
 

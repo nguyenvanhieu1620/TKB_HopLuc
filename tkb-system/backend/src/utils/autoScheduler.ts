@@ -5,7 +5,7 @@ import { getPolicyValue } from "./policyConfig";
 import {
   getPeriodMinutes, getTotalPeriodsForSubject, getPeriodTimelineForSubject, getWeeksInSemester,
   checkRoomCapacity, checkSessionLength, checkDailyHoursLimit, checkTeacherWeeklyHours, checkTeacherYearlyHours,
-  CAPACITY_POLICY_BY_ROOM_TYPE, ROOM_TYPES_BY_CATEGORY, roomCategoryFor, getRequiredGroupCount,
+  CAPACITY_POLICY_BY_ROOM_TYPE, ROOM_TYPES_BY_CATEGORY, roomCategoryFor, getRequiredGroupCount, getSubjectRoomIds,
 } from "./policyRules";
 import { checkScheduleConflict, findHoliday } from "./conflictCheck";
 import { checkTrainingModeRule, getClassTrainingMode, classifyPeriod, getWeekday } from "./trainingModeCheck";
@@ -362,7 +362,19 @@ async function processSubjectPart(
   classSize: number
 ): Promise<{ scheduled: number; failureReason?: string }> {
   const roomCategory = sessionType === "Theory" ? "LyThuyet" : roomCategoryFor(task.practiceMode, "Practice");
-  const eligibleRoomIds = rooms.filter((r) => ROOM_TYPES_BY_CATEGORY[roomCategory]?.includes(r.RoomType)).map((r) => r.RoomId);
+  let eligibleRoomIds = rooms.filter((r) => ROOM_TYPES_BY_CATEGORY[roomCategory]?.includes(r.RoomType)).map((r) => r.RoomId);
+
+  // Việc BR: buổi Thực hành/Lâm sàng — nếu môn đã gán riêng danh sách phòng phù hợp (SubjectRooms),
+  // CHỈ được chọn trong đúng danh sách đó. Giao (intersect) với danh sách lọc theo RoomType ở trên
+  // (không thay thế hẳn) để vẫn tôn trọng đúng loại phòng cần dùng dù lỡ gán nhầm phòng khác loại.
+  // Môn chưa cấu hình (getSubjectRoomIds rỗng) giữ nguyên danh sách theo RoomType như trước.
+  if (sessionType === "Practice") {
+    const subjectRoomIds = await getSubjectRoomIds(task.subjectId);
+    if (subjectRoomIds.length > 0) {
+      eligibleRoomIds = eligibleRoomIds.filter((id) => subjectRoomIds.includes(id));
+    }
+  }
+
   if (eligibleRoomIds.length === 0) {
     const label = roomCategory === "LyThuyet" ? "Lý thuyết" : roomCategory === "LamSang" ? "Lâm sàng" : "Thực hành";
     return { scheduled: 0, failureReason: `Không có phòng ${label} nào khả dụng` };
