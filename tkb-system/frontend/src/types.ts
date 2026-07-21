@@ -89,7 +89,8 @@ export interface CurriculumItem {
   ExamHours: number | null;
   // Việc BA: hình thức dạy phần Thực hành của môn — ThucHanh (mặc định, phòng thực hành/60p/tiết),
   // LyThuyet (dạy tại phòng lý thuyết, 45p/tiết nhưng vẫn tính vào chỉ tiêu Thực hành), LamSang.
-  PracticeMode: "LyThuyet" | "ThucHanh" | "LamSang";
+  // Việc BW: SanBai (phòng Sân bãi riêng, 45p/tiết như Lý thuyết, không xếp Ca Tối — vd GDTC).
+  PracticeMode: "LyThuyet" | "ThucHanh" | "LamSang" | "SanBai";
   SortOrder: number;
   IsActive: boolean;
 }

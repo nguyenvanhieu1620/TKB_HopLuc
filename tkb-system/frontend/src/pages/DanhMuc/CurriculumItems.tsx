@@ -26,16 +26,20 @@ const emptyForm: ItemForm = {
 
 // Việc BA: hình thức dạy phần Thực hành của môn — ảnh hưởng loại phòng được chọn và cách tính
 // tiến độ (Lý thuyết/Thực hành) khi xếp lịch (xem ScheduleGrid.tsx).
+// Việc BW: thêm SanBai (Sân bãi, vd Giáo dục thể chất) — trước đó phải dùng tạm LyThuyet vì thiếu
+// giá trị riêng, khiến hệ thống tìm sai loại phòng (phòng thực hành lab thay vì sân bãi ngoài trời).
 const PRACTICE_MODE_OPTIONS: { value: string; label: string }[] = [
   { value: "ThucHanh", label: "Học tại phòng Thực hành" },
   { value: "LyThuyet", label: "Học như Lý thuyết (dạy tại phòng Lý thuyết)" },
   { value: "LamSang", label: "Lâm sàng tại bệnh viện" },
+  { value: "SanBai", label: "Sân bãi (GDTC...)" },
 ];
 
 const PRACTICE_MODE_LABEL: Record<string, string> = {
   ThucHanh: "Thực hành",
   LyThuyet: "Học như LT",
   LamSang: "Lâm sàng",
+  SanBai: "Sân bãi",
 };
 
 function parsePracticeMode(raw: string): { value: string; error: boolean } {
@@ -45,6 +49,7 @@ function parsePracticeMode(raw: string): { value: string; error: boolean } {
   if (normalized === "thuc hanh") return { value: "ThucHanh", error: false };
   if (normalized === "ly thuyet") return { value: "LyThuyet", error: false };
   if (normalized === "lam sang") return { value: "LamSang", error: false };
+  if (normalized === "san bai") return { value: "SanBai", error: false };
   return { value: "ThucHanh", error: true };
 }
 

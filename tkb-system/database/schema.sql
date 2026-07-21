@@ -114,6 +114,8 @@ CREATE TABLE CurriculumItems (
     -- Việc BA: hình thức dạy phần Thực hành của môn này — LyThuyet (dạy tại phòng Lý thuyết,
     -- 45p/tiết, nhưng vẫn tính vào chỉ tiêu giờ Thực hành), ThucHanh (mặc định, phòng Thực
     -- hành/Labo, 60p/tiết), LamSang (phòng Lâm sàng, 60p/tiết).
+    -- Việc BW: bổ sung SanBai (Sân bãi, vd Giáo dục thể chất — phòng Sân bãi riêng, 45p/tiết như
+    -- Lý thuyết, không xếp Ca Tối) — trước đó phải dùng tạm LyThuyet làm workaround vì thiếu giá trị.
     PracticeMode     NVARCHAR(10) NOT NULL DEFAULT 'ThucHanh',
     SortOrder        INT NOT NULL DEFAULT 0,
     IsActive         BIT NOT NULL DEFAULT 1,
@@ -121,7 +123,7 @@ CREATE TABLE CurriculumItems (
     CONSTRAINT FK_CurriculumItems_Subject FOREIGN KEY (SubjectId) REFERENCES Subjects(SubjectId),
     CONSTRAINT FK_CurriculumItems_Cohort  FOREIGN KEY (CohortId)  REFERENCES Cohorts(CohortId),
     CONSTRAINT UQ_CurriculumItems UNIQUE (MajorId, SubjectId, CohortId),
-    CONSTRAINT CK_CurriculumItems_PracticeMode CHECK (PracticeMode IN ('LyThuyet', 'ThucHanh', 'LamSang'))
+    CONSTRAINT CK_CurriculumItems_PracticeMode CHECK (PracticeMode IN ('LyThuyet', 'ThucHanh', 'LamSang', 'SanBai'))
 );
 GO
 

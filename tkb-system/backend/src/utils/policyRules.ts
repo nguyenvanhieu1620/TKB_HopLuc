@@ -10,20 +10,28 @@ export const CAPACITY_POLICY_BY_ROOM_TYPE: Record<string, string> = {
   LyThuyet: "MaxStudentsPerTheoryRoom",
   ThucHanh: "MaxStudentsPerPracticeGroup",
   LamSang: "MaxStudentsPerClinicalGroup",
+  // Việc BW: Sân bãi dùng chung mốc sĩ số với Lý thuyết (phòng/sân rộng, không có mốc riêng) —
+  // khớp với cách roomCategory SanBai rơi vào nhánh capacityLimit chung của Lý thuyết ở autoScheduler.ts.
+  SanBai: "MaxStudentsPerTheoryRoom",
 };
 
 // Việc BA/BB (ban đầu chỉ có ở frontend ScheduleGrid.tsx) — port sang backend để autoScheduler.ts
 // dùng chung, tránh định nghĩa lại logic suy ra nhóm loại phòng từ PracticeMode+SessionType.
+// Việc BW: thêm category SanBai riêng (PracticeMode=SanBai) — CỐ Ý giữ nguyên "SanBai" trong danh
+// sách của LyThuyet để không phá vỡ các môn CHƯA kịp đổi từ workaround PracticeMode=LyThuyet cũ
+// (dùng phòng Sân bãi qua nhóm Lý thuyết) sang PracticeMode=SanBai mới — tương thích ngược.
 export const ROOM_TYPES_BY_CATEGORY: Record<string, string[]> = {
   LyThuyet: ["LyThuyet", "SanBai"],
   ThucHanh: ["ThucHanh", "Labo"],
   LamSang: ["LamSang"],
+  SanBai: ["SanBai"],
 };
 
 export function roomCategoryFor(practiceMode: string | null, sessionType: "Theory" | "Practice"): string {
   if (sessionType === "Theory") return "LyThuyet";
   if (practiceMode === "LyThuyet") return "LyThuyet";
   if (practiceMode === "LamSang") return "LamSang";
+  if (practiceMode === "SanBai") return "SanBai";
   return "ThucHanh";
 }
 

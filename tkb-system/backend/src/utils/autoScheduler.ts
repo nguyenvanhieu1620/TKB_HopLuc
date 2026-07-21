@@ -419,13 +419,17 @@ async function processSubjectPart(
   }
 
   if (eligibleRoomIds.length === 0) {
-    const label = roomCategory === "LyThuyet" ? "Lý thuyết" : roomCategory === "LamSang" ? "Lâm sàng" : "Thực hành";
+    const label = roomCategory === "LyThuyet" ? "Lý thuyết" : roomCategory === "LamSang" ? "Lâm sàng"
+      : roomCategory === "SanBai" ? "Sân bãi" : "Thực hành";
     return { scheduled: 0, failureReason: `Không có phòng ${label} nào khả dụng` };
   }
 
-  // Việc BV: TOÀN BỘ phòng khả dụng của block này là Sân bãi (vd Giáo dục thể chất đã gán riêng
-  // SubjectRooms toàn Sân bãi) — không phù hợp học buổi Tối, loại Ca Tối giống nguyên tắc Lâm sàng.
-  const isAllSanBai = eligibleRoomIds.every((id) => rooms.find((r) => r.RoomId === id)?.RoomType === "SanBai");
+  // Việc BV/BW: TOÀN BỘ phòng khả dụng của block này là Sân bãi (dù suy từ PracticeMode=SanBai của
+  // môn — roomCategory === "SanBai", cách CHÍNH — hay từ RoomType của các phòng đã gán riêng qua
+  // SubjectRooms/Việc BR/BU, cách dự phòng khi môn vẫn còn dùng workaround PracticeMode=LyThuyet cũ)
+  // — không phù hợp học buổi Tối, loại Ca Tối giống nguyên tắc Lâm sàng.
+  const isAllSanBai = roomCategory === "SanBai"
+    || eligibleRoomIds.every((id) => rooms.find((r) => r.RoomId === id)?.RoomType === "SanBai");
 
   const periodMinutes = await getPeriodMinutes(roomCategory);
   const maxPerSessionKey = sessionType === "Theory" ? "MaxTheoryHoursPerSession" : "MaxPracticeHoursPerSession";

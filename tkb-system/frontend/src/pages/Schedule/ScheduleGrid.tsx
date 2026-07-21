@@ -79,6 +79,9 @@ const CAPACITY_POLICY_BY_ROOM_TYPE: Record<string, string> = {
   LyThuyet: "MaxStudentsPerTheoryRoom",
   ThucHanh: "MaxStudentsPerPracticeGroup",
   LamSang: "MaxStudentsPerClinicalGroup",
+  // Việc BW: Sân bãi dùng chung mốc sĩ số với Lý thuyết (không có mốc riêng) — khớp cách roomCategory
+  // SanBai rơi vào nhánh policyKey chung của Lý thuyết ở capacityHint bên dưới.
+  SanBai: "MaxStudentsPerTheoryRoom",
 };
 
 // Việc AW: ô chọn "Loại buổi học" tường minh thay vì bắt Admin phải đoán qua tên Phòng.
@@ -87,10 +90,14 @@ const CAPACITY_POLICY_BY_ROOM_TYPE: Record<string, string> = {
 // có thể dạy tại phòng Lý thuyết (môn có PracticeMode=LyThuyet), lúc đó "loại phòng" và
 // "SessionType" không còn là 1. roomCategoryFor() suy ra nhóm RoomType cần lọc dựa trên CẢ 2:
 // PracticeMode của môn đang chọn + SessionType người dùng chọn.
+// Việc BW: thêm category SanBai riêng (PracticeMode=SanBai) — CỐ Ý giữ nguyên "SanBai" trong danh
+// sách của LyThuyet để không phá vỡ các môn CHƯA kịp đổi từ workaround PracticeMode=LyThuyet cũ
+// sang PracticeMode=SanBai mới — tương thích ngược.
 const ROOM_TYPES_BY_CATEGORY: Record<string, string[]> = {
   LyThuyet: ["LyThuyet", "SanBai"],
   ThucHanh: ["ThucHanh", "Labo"],
   LamSang: ["LamSang"],
+  SanBai: ["SanBai"],
 };
 
 function roomCategoryFor(practiceMode: string | null, sessionType: string): string {
@@ -98,6 +105,7 @@ function roomCategoryFor(practiceMode: string | null, sessionType: string): stri
   if (sessionType === "Practice") {
     if (practiceMode === "LyThuyet") return "LyThuyet";
     if (practiceMode === "LamSang") return "LamSang";
+    if (practiceMode === "SanBai") return "SanBai";
     return "ThucHanh";
   }
   return "";
@@ -116,6 +124,12 @@ function sessionTypeOptionsForPracticeMode(practiceMode: string | null): { value
     return [
       { value: "Theory", label: "Lý thuyết" },
       { value: "Practice", label: "Lâm sàng" },
+    ];
+  }
+  if (practiceMode === "SanBai") {
+    return [
+      { value: "Theory", label: "Lý thuyết" },
+      { value: "Practice", label: "Sân bãi (GDTC...)" },
     ];
   }
   return [

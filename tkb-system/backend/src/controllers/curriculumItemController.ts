@@ -15,7 +15,7 @@ interface CurriculumItemBody {
   cohortId?: number;
   sortOrder?: number;
   isActive?: boolean;
-  practiceMode?: "LyThuyet" | "ThucHanh" | "LamSang";
+  practiceMode?: "LyThuyet" | "ThucHanh" | "LamSang" | "SanBai";
 }
 
 interface BulkCurriculumRow {
@@ -29,7 +29,7 @@ interface BulkCurriculumRow {
   practiceHours?: number;
   examHours?: number;
   termNumber?: number;
-  practiceMode?: "LyThuyet" | "ThucHanh" | "LamSang";
+  practiceMode?: "LyThuyet" | "ThucHanh" | "LamSang" | "SanBai";
 }
 
 export async function list(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
