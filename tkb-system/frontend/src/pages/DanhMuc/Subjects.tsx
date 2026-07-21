@@ -32,8 +32,11 @@ const emptyForm: SubjectForm = {
 
 // Việc BR: chỉ các loại phòng liên quan Thực hành/Lâm sàng mới cần gán riêng — Lý thuyết không thuộc
 // phạm vi tính năng này (checkSubjectRoom backend chỉ áp dụng khi sessionType === "Practice").
-const PRACTICE_ROOM_TYPES = ["ThucHanh", "Labo", "LamSang"];
-const ROOM_TYPE_LABEL: Record<string, string> = { ThucHanh: "Thực hành", Labo: "Labo", LamSang: "Lâm sàng" };
+// Việc BU: bổ sung SanBai (Sân bãi) — dùng cho môn như Giáo dục thể chất (PracticeMode="LyThuyet" nên
+// roomCategoryFor xếp phòng loại này chung nhóm LyThuyet/SanBai, xem policyRules.ts) — trước đây bị bỏ
+// sót khỏi danh sách nên Admin không gán được Sân bãi riêng cho môn.
+const PRACTICE_ROOM_TYPES = ["ThucHanh", "Labo", "LamSang", "SanBai"];
+const ROOM_TYPE_LABEL: Record<string, string> = { ThucHanh: "Thực hành", Labo: "Labo", LamSang: "Lâm sàng", SanBai: "Sân bãi" };
 
 // Phân loại môn theo khối kiến thức — dùng để ưu tiên thứ tự xử lý môn khi tự động xếp lịch (Đại
 // cương xếp trước, rồi Cơ sở ngành, rồi Chuyên ngành). Mã nội bộ không dấu, nhãn tiếng Việt ở UI —
@@ -532,10 +535,10 @@ export default function Subjects() {
 
         <div className="w-full">
           <p className="hint mb-1">
-            Phòng Thực hành/Lâm sàng phù hợp với môn này (không bắt buộc) — nếu để trống, xếp lịch Thực
-            hành/Lâm sàng cho môn này vẫn cho chọn mọi phòng đúng loại như trước. Nếu chọn ít nhất 1
-            phòng ở đây, xếp lịch (cả xếp tay lẫn tự động) cho môn này sẽ CHỈ được chọn trong đúng danh
-            sách phòng đã chọn.
+            Phòng Thực hành/Lâm sàng/Sân bãi phù hợp với môn này (không bắt buộc) — nếu để trống, xếp
+            lịch Thực hành/Lâm sàng cho môn này vẫn cho chọn mọi phòng đúng loại như trước. Nếu chọn ít
+            nhất 1 phòng ở đây, xếp lịch (cả xếp tay lẫn tự động) cho môn này sẽ CHỈ được chọn trong đúng
+            danh sách phòng đã chọn.
           </p>
           {form.facultyId && (
             <label className="flex items-center gap-2 text-[13px] mb-1">
@@ -545,7 +548,7 @@ export default function Subjects() {
             </label>
           )}
           <div className="subject-picker-list">
-            {pickableRooms.length === 0 && <span className="hint">Không có phòng Thực hành/Lâm sàng nào phù hợp.</span>}
+            {pickableRooms.length === 0 && <span className="hint">Không có phòng Thực hành/Lâm sàng/Sân bãi nào phù hợp.</span>}
             {pickableRooms.map((r) => (
               <label key={r.RoomId} className="flex items-center gap-2">
                 <input type="checkbox" checked={form.roomIds.includes(String(r.RoomId))}
