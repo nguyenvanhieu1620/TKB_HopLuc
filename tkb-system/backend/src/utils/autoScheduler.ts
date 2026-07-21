@@ -382,28 +382,42 @@ function computeBlockPlan(total: number, max: number, mode: "theory" | "practice
   return [...Array(numBlocks - 1).fill(max), total - max * (numBlocks - 1)];
 }
 
-// Xử lý 1 phần (Lý thuyết hoặc Thực hành) của 1 môn TRONG TUẦN đang xét: tính nhóm phòng, sĩ số/
-// nhóm, rồi lặp xếp từng block trong khung tuần (ctx.rangeStart..ctx.rangeEnd).
-//
-// - KÍCH THƯỚC từng block lấy TỪ TRƯỚC theo `computeBlockPlan(wholeRemaining, ...)` (tính 1 lần cho
-//   toàn bộ phần còn thiếu CẢ MÔN, không phải chỉ tiêu tuần) — để luôn cố xếp TRỌN VẸN tối đa cho
-//   phép/buổi mà không tạo buổi cuối lệch bất hợp lý (Lý thuyết chia đều khi dư 1; Thực hành ghép buổi
-//   cuối khi dư 1). Nếu kích thước đó không đặt được ở đâu trong tuần, giảm dần để thử, nhưng KHÔNG
-//   giảm xuống dưới 2 tiết trừ khi block đó vốn đã là 1 tiết (chỉ xảy ra khi total còn lại đúng 1).
-// - VÒNG LẶP (bao nhiêu block/buổi xếp trong 1 lần chạy tuần này) dừng khi đạt `quotaThisWeek` (chỉ
-//   tiêu tuần, có thể xếp NHỈNH hơn 1 chút vì block cuối luôn xếp trọn vẹn, không cắt giữa chừng) HOẶC
-//   khi môn đã xếp xong hoàn toàn — để các môn khác trong cùng tuần vẫn còn slot mà xếp, không bị 1
-//   môn chiếm hết cả tuần (đã xác nhận qua test thực tế: bỏ hẳn giới hạn này khiến môn xử lý trước
-//   chiếm hết slot của cả tuần, các môn xử lý sau nhận 0 tiết).
-async function processSubjectPart(
-  ctx: RunContext,
+// Việc BY: trạng thái xử lý 1 phần (Lý thuyết hoặc Thực hành) của 1 môn TRONG TUẦN — TÁCH RIÊNG khỏi
+// việc thực sự đặt block, để runAutoSchedule có thể XOAY VÒNG (round-robin) giữa nhiều môn thay vì
+// xếp trọn vẹn 1 môn rồi mới sang môn tiếp theo (cách cũ khiến lớp có nhiều slot khả dụng, vd Liên
+// thông có cả cuối tuần lẫn buổi tối, học dứt điểm vài môn chỉ trong vài tuần đầu, dồn cục, để trống
+// các tuần cuối Kỳ).
+interface SubjectPartState {
+  task: SubjectTask;
+  sessionType: "Theory" | "Practice";
+  eligibleRoomIds: number[];
+  periodMinutes: number;
+  maxPerSession: number;
+  requiresGrouping: boolean;
+  groupCount: number;
+  isClinical: boolean;
+  classSize: number;
+  blockPlan: number[];
+  planIndex: number;
+  left: number;
+  quotaThisWeek: number;
+  scheduled: number;
+  done: boolean;
+  failureReason?: string;
+}
+
+// Chuẩn bị (KHÔNG đặt block nào) — tính nhóm phòng, sĩ số/nhóm, kế hoạch chia block
+// (computeBlockPlan) cho 1 phần (Lý thuyết/Thực hành) của 1 môn trong tuần đang xét. Toàn bộ nội dung
+// tính toán này giữ NGUYÊN VẸN so với bản processSubjectPart trước Việc BY, chỉ tách khỏi vòng lặp đặt
+// block để vòng lặp đó chuyển ra ngoài (round-robin ở runAutoSchedule).
+async function prepareSubjectPart(
   task: SubjectTask,
   sessionType: "Theory" | "Practice",
   wholeRemaining: number,
   quotaThisWeek: number,
   rooms: RoomRow[],
   classSize: number
-): Promise<{ scheduled: number; failureReason?: string }> {
+): Promise<{ state?: SubjectPartState; failureReason?: string }> {
   const roomCategory = sessionType === "Theory" ? "LyThuyet" : roomCategoryFor(task.practiceMode, "Practice");
   let eligibleRoomIds = rooms.filter((r) => ROOM_TYPES_BY_CATEGORY[roomCategory]?.includes(r.RoomType)).map((r) => r.RoomId);
 
@@ -421,7 +435,7 @@ async function processSubjectPart(
   if (eligibleRoomIds.length === 0) {
     const label = roomCategory === "LyThuyet" ? "Lý thuyết" : roomCategory === "LamSang" ? "Lâm sàng"
       : roomCategory === "SanBai" ? "Sân bãi" : "Thực hành";
-    return { scheduled: 0, failureReason: `Không có phòng ${label} nào khả dụng` };
+    return { failureReason: `Không có phòng ${label} nào khả dụng` };
   }
 
   // Việc BV/BW: TOÀN BỘ phòng khả dụng của block này là Sân bãi (dù suy từ PracticeMode=SanBai của
@@ -454,41 +468,56 @@ async function processSubjectPart(
   }
 
   const blockPlan = computeBlockPlan(wholeRemaining, maxPerSession, sessionType === "Theory" ? "theory" : "practice");
-  let scheduled = 0;
-  let left = wholeRemaining;
-  let planIndex = 0;
-  while (scheduled < quotaThisWeek && left > 0) {
-    // Hết block đã hoạch định trước (computeBlockPlan) nhưng vẫn còn thiếu tiết — xảy ra khi 1 block
-    // trong kế hoạch phải co lại lúc đặt (vd ngoại lệ "ghép buổi 5 tiết Thực hành" không có Ca nào đủ
-    // dài để chứa, phải co xuống 4) khiến phần dư của block đó CHƯA được xếp. Dùng lại cách tính
-    // thông thường (MIN phần còn lại, giới hạn tối đa/buổi) để tiếp tục xếp nốt, không bỏ sót tiết.
-    let blockSize = planIndex < blockPlan.length ? blockPlan[planIndex] : Math.min(left, maxPerSession);
-    const minBlockSize = blockSize === 1 ? 1 : 2;
-    let placed = false;
-    while (blockSize >= minBlockSize) {
-      const params: PlaceBlockParams = {
-        subjectId: task.subjectId, sessionType, periods: blockSize, periodMinutes,
-        eligibleRoomIds, teacherIds: task.teacherIds, totalStudents: classSize,
-        isClinical: roomCategory === "LamSang" || isAllSanBai, maxPerSession, requiresGrouping,
-      };
-      const result = groupCount > 1
-        ? await tryPlaceGroupSplitBlock(ctx, { ...params, groupCount })
-        : await tryPlaceSingleBlock(ctx, params);
-      if (result.success) {
-        left -= blockSize;
-        scheduled += blockSize;
-        placed = true;
-        break;
-      }
-      blockSize -= 1;
-    }
-    if (!placed) {
-      const label = sessionType === "Theory" ? "Lý thuyết" : "Thực hành";
-      return { scheduled, failureReason: `Hết slot hợp lệ trong Tuần này cho phần ${label} — còn thiếu ${left} tiết` };
-    }
-    planIndex++;
+
+  return {
+    state: {
+      task, sessionType, eligibleRoomIds, periodMinutes, maxPerSession, requiresGrouping, groupCount, classSize,
+      isClinical: roomCategory === "LamSang" || isAllSanBai,
+      blockPlan, planIndex: 0, left: wholeRemaining, quotaThisWeek, scheduled: 0, done: false,
+    },
+  };
+}
+
+// Việc BY: đặt ĐÚNG 1 block cho state đang xét rồi trả lại ngay (không lặp thêm) — runAutoSchedule
+// gọi hàm này XOAY VÒNG qua từng môn (mỗi môn 1 lượt/1 block) thay vì gọi liên tiếp cho tới khi 1 môn
+// xếp xong hẳn mới sang môn khác. Kích thước block + cơ chế co nhỏ khi hết chỗ (không giảm dưới 2 tiết
+// trừ khi bản thân block chỉ còn 1 tiết) giữ NGUYÊN VẸN như vòng lặp gốc trong processSubjectPart.
+async function tryAdvanceOneBlock(ctx: RunContext, state: SubjectPartState): Promise<boolean> {
+  if (state.scheduled >= state.quotaThisWeek || state.left <= 0) {
+    state.done = true;
+    return false;
   }
-  return { scheduled };
+
+  // Hết block đã hoạch định trước (computeBlockPlan) nhưng vẫn còn thiếu tiết — xảy ra khi 1 block
+  // trong kế hoạch phải co lại lúc đặt (vd ngoại lệ "ghép buổi 5 tiết Thực hành" không có Ca nào đủ
+  // dài để chứa, phải co xuống 4) khiến phần dư của block đó CHƯA được xếp. Dùng lại cách tính
+  // thông thường (MIN phần còn lại, giới hạn tối đa/buổi) để tiếp tục xếp nốt, không bỏ sót tiết.
+  let blockSize = state.planIndex < state.blockPlan.length ? state.blockPlan[state.planIndex] : Math.min(state.left, state.maxPerSession);
+  const minBlockSize = blockSize === 1 ? 1 : 2;
+  while (blockSize >= minBlockSize) {
+    const params: PlaceBlockParams = {
+      subjectId: state.task.subjectId, sessionType: state.sessionType, periods: blockSize, periodMinutes: state.periodMinutes,
+      eligibleRoomIds: state.eligibleRoomIds, teacherIds: state.task.teacherIds, totalStudents: state.classSize,
+      isClinical: state.isClinical, maxPerSession: state.maxPerSession, requiresGrouping: state.requiresGrouping,
+    };
+    const result = state.groupCount > 1
+      ? await tryPlaceGroupSplitBlock(ctx, { ...params, groupCount: state.groupCount })
+      : await tryPlaceSingleBlock(ctx, params);
+    if (result.success) {
+      state.left -= blockSize;
+      state.scheduled += blockSize;
+      state.planIndex++;
+      return true;
+    }
+    blockSize -= 1;
+  }
+  // Không đặt được block nào kể cả đã co nhỏ tối đa — phần này của môn coi như hết slot cho tuần này,
+  // đánh dấu done để round-robin không thử lại môn này nữa (slot chỉ HẸP dần qua các lượt do môn khác
+  // tiếp tục chiếm dụng, không bao giờ RỘNG ra, nên thử lại chắc chắn vẫn fail).
+  const label = state.sessionType === "Theory" ? "Lý thuyết" : "Thực hành";
+  state.done = true;
+  state.failureReason = `Hết slot hợp lệ trong Tuần này cho phần ${label} — còn thiếu ${state.left} tiết`;
+  return false;
 }
 
 export async function runAutoSchedule(classId: number, semesterId: number, weekNumber: number, userId: number): Promise<AutoScheduleReport> {
@@ -639,75 +668,97 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
     notifiedTeacherIds: new Set(),
   };
 
-  const subjectResults: AutoScheduleSubjectResult[] = [];
+  // Việc BY: chuẩn bị trạng thái xử lý cho TỪNG môn (KHÔNG đặt block nào ở bước này) theo ĐÚNG thứ tự
+  // cấp bách đã sắp ở trên (subjectTasks.sort) — periodsNeeded/lý do skip-ngay (thiếu GV, chưa xong Lý
+  // thuyết, hết phòng) tính y hệt bản trước Việc BY, chỉ tách khỏi việc đặt block thật.
+  interface SubjectProcessing {
+    task: SubjectTask;
+    periodsNeeded: number;
+    state: SubjectPartState | null;
+    // Việc BY: MỖI môn chỉ có ĐÚNG 1 state hoạt động/tuần (Theory hoặc Practice — không bao giờ cả 2,
+    // theo đúng ràng buộc "Lý thuyết trước Thực hành" bên dưới), nhưng lý do báo cáo (failureReason)
+    // có thể gồm NHIỀU câu cùng lúc (vd Theory vừa hết slot VỪA còn Thực hành đang chờ Lý thuyết xong)
+    // — giữ mảng reasons để nối lại y hệt bản trước Việc BY, không rút gọn còn 1 câu.
+    reasons: string[];
+  }
+  const processing: SubjectProcessing[] = [];
   for (const task of subjectTasks) {
     const totalRemaining = task.theoryRemaining + task.practiceRemaining;
     if (totalRemaining === 0) {
-      subjectResults.push({
-        subjectId: task.subjectId, subjectName: task.subjectName,
-        periodsNeeded: 0, periodsScheduled: 0, isComplete: true,
-      });
+      processing.push({ task, periodsNeeded: 0, state: null, reasons: [] });
       continue;
     }
 
     // Chỉ tiêu TUẦN NÀY (computeQuotas — cùng công thức đã dùng để sắp thứ tự xử lý môn ở trên) dùng
     // CHO 2 việc: (1) quyết định phần nào (Lý thuyết/Thực hành) của môn này được XÉT xử lý trong
     // tuần đang chạy — quota luôn > 0 khi phần đó còn thiếu; (2) làm giới hạn TỔNG SỐ TIẾT xếp được
-    // của phần đó TRONG TUẦN NÀY (vòng lặp ngoài của processSubjectPart dừng khi đạt quota) — đây là
-    // phần tự sửa lại so với bản đầu: thử bỏ hẳn giới hạn này (chỉ dùng quota để bật/tắt xét môn,
-    // không chặn số tiết) và test thật cho thấy 1-2 môn xử lý trước chiếm hết slot cả tuần, các môn
-    // còn lại nhận 0 tiết — sai với tinh thần "xếp dần đều qua các tuần". Nên quota vẫn cần chặn TỔNG
-    // số tiết/tuần để công bằng giữa các môn — Việc BK giải quyết vấn đề "dồn cục cuối Kỳ" bằng cách
-    // đổi THỨ TỰ xử lý môn (ưu tiên môn cấp bách nhất trước) chứ không đổi cơ chế quota này.
-    // KÍCH THƯỚC 1 BLOCK: processSubjectPart không tính blockSize từ quota mà tính từ phần còn thiếu
-    // CẢ MÔN (task.theoryRemaining/practiceRemaining) — luôn cố xếp TRỌN VẸN tối đa/buổi thay vì cắt
-    // nhỏ theo chỉ tiêu tuần — nên block cuối cùng của 1 môn trong tuần vẫn có thể NHỈNH hơn quota một
-    // chút (quota không cắt giữa block), chỉ không được nhỏ hơn giới hạn tối thiểu 2 tiết (trừ khi còn
-    // đúng 1 tiết cuối cùng của cả môn).
+    // của phần đó TRONG TUẦN NÀY (tryAdvanceOneBlock dừng khi đạt quota) — quota vẫn cần chặn TỔNG số
+    // tiết/tuần để công bằng giữa các môn — Việc BK giải quyết vấn đề "dồn cục cuối Kỳ" bằng cách đổi
+    // THỨ TỰ xử lý môn (ưu tiên môn cấp bách nhất trước); Việc BY giải quyết thêm vấn đề "vài môn dùng
+    // hết slot cả tuần trước khi môn khác kịp xử lý" bằng cách XOAY VÒNG (mỗi môn 1 block/lượt) thay
+    // vì xếp trọn vẹn 1 môn rồi mới sang môn tiếp theo — 2 cơ chế bổ sung cho nhau, không thay thế.
     // periodsNeeded/periodsScheduled báo cáo theo phần còn thiếu THẬT của cả môn (không phải theo
     // chỉ tiêu tuần).
     const { theoryQuota, practiceQuota } = computeQuotas(task);
     const periodsNeeded = totalRemaining;
 
     if (task.teacherIds.length === 0) {
-      subjectResults.push({
-        subjectId: task.subjectId, subjectName: task.subjectName,
-        periodsNeeded, periodsScheduled: 0, isComplete: false,
-        failureReason: "Không có giảng viên nào dạy được môn này",
-      });
+      processing.push({ task, periodsNeeded, state: null, reasons: ["Không có giảng viên nào dạy được môn này"] });
       continue;
     }
 
-    let scheduled = 0;
+    let state: SubjectPartState | null = null;
     const reasons: string[] = [];
 
     if (theoryQuota > 0) {
-      const result = await processSubjectPart(ctx, task, "Theory", task.theoryRemaining, theoryQuota, rooms, cls.ClassSize);
-      scheduled += result.scheduled;
-      if (result.failureReason) reasons.push(result.failureReason);
+      const prep = await prepareSubjectPart(task, "Theory", task.theoryRemaining, theoryQuota, rooms, cls.ClassSize);
+      state = prep.state ?? null;
+      if (prep.failureReason) reasons.push(prep.failureReason);
     }
     // Việc BM (vấn đề 1): CHỈ xếp Thực hành/Lâm sàng khi Lý thuyết CẢ KỲ của ĐÚNG môn này đã xong
     // (task.theoryRemaining — tính TỪ DB TRƯỚC khi chạy tuần này — bằng 0) — sai sư phạm nếu học Thực
     // hành trước khi xong Lý thuyết. Cố tình dùng giá trị theoryRemaining TRƯỚC tuần này (không phải
     // recompute sau khi vừa xếp Lý thuyết ở trên) — nếu Lý thuyết chỉ vừa xong TRONG tuần này thì vẫn
     // dời Thực hành sang tuần sau, tránh Thực hành bị xếp vào ngày SỚM HƠN buổi Lý thuyết cuối cùng
-    // trong cùng tuần. Chỉ áp dụng cho ĐÚNG môn này — không ảnh hưởng môn khác (mỗi môn có
-    // theoryRemaining riêng, môn A có thể đang xếp Thực hành trong khi môn B vẫn đang xếp Lý thuyết).
+    // trong cùng tuần. Chỉ áp dụng cho ĐÚNG môn này — không ảnh hưởng môn khác. ĐỘC LẬP với nhánh
+    // Theory ở trên (không dùng continue/else) — giữ ĐÚNG như bản gốc: 1 môn có thể VỪA có lý do Theory
+    // hết slot VỪA bị dời Thực hành trong CÙNG 1 tuần, không phải if/else loại trừ nhau.
     if (practiceQuota > 0 && task.theoryRemaining > 0) {
       reasons.push(`Chưa xếp Thực hành/Lâm sàng — còn thiếu ${task.theoryRemaining} tiết Lý thuyết cần học xong trước`);
     } else if (practiceQuota > 0) {
-      const result = await processSubjectPart(ctx, task, "Practice", task.practiceRemaining, practiceQuota, rooms, cls.ClassSize);
-      scheduled += result.scheduled;
-      if (result.failureReason) reasons.push(result.failureReason);
+      const prep = await prepareSubjectPart(task, "Practice", task.practiceRemaining, practiceQuota, rooms, cls.ClassSize);
+      state = prep.state ?? null;
+      if (prep.failureReason) reasons.push(prep.failureReason);
     }
 
-    const isComplete = scheduled >= periodsNeeded;
-    subjectResults.push({
-      subjectId: task.subjectId, subjectName: task.subjectName,
-      periodsNeeded, periodsScheduled: scheduled, isComplete,
-      failureReason: isComplete ? undefined : reasons.join(" | "),
-    });
+    processing.push({ task, periodsNeeded, state, reasons });
   }
+
+  // Việc BY: XOAY VÒNG (round-robin) qua danh sách — ĐÚNG thứ tự cấp bách đã chuẩn bị ở trên, không
+  // đổi. Mỗi lượt duyệt hết danh sách, mỗi môn còn hoạt động (state chưa done) chỉ nhận ĐÚNG 1 block
+  // rồi chuyển ngay sang môn tiếp theo — lặp lại nhiều lượt tới khi 1 lượt đầy đủ không môn nào tiến
+  // triển được nữa (hết slot hợp lệ của tuần hoặc mọi môn đã đủ chỉ tiêu tuần). Nhờ vậy nhiều môn cùng
+  // xuất hiện xen kẽ trong 1 tuần thay vì 1-2 môn dùng hết slot trước khi môn khác kịp xử lý.
+  let progressed = true;
+  while (progressed) {
+    progressed = false;
+    for (const p of processing) {
+      if (!p.state || p.state.done) continue;
+      const placed = await tryAdvanceOneBlock(ctx, p.state);
+      if (placed) progressed = true;
+    }
+  }
+
+  const subjectResults: AutoScheduleSubjectResult[] = processing.map((p) => {
+    const scheduled = p.state?.scheduled ?? 0;
+    const isComplete = scheduled >= p.periodsNeeded;
+    const reasons = p.state?.failureReason ? [...p.reasons, p.state.failureReason] : p.reasons;
+    return {
+      subjectId: p.task.subjectId, subjectName: p.task.subjectName,
+      periodsNeeded: p.periodsNeeded, periodsScheduled: scheduled, isComplete,
+      failureReason: isComplete ? undefined : reasons.join(" | "),
+    };
+  });
 
   const totalPeriodsNeeded = subjectResults.reduce((sum, r) => sum + r.periodsNeeded, 0);
   const totalPeriodsScheduled = subjectResults.reduce((sum, r) => sum + r.periodsScheduled, 0);
