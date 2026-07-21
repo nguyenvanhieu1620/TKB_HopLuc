@@ -47,6 +47,20 @@ export function getRequiredGroupCount(classSize: number, sessionType: "Practice"
   return 2 + Math.ceil((classSize - 35) / 20);
 }
 
+// Việc BT: 1 Môn học có thể KHÔNG cần chia nhóm khi học Thực hành/Lâm sàng dù sĩ số lớp vượt bảng mốc
+// (vd Giáo dục thể chất học ở sân bãi rộng, cả lớp học chung 1 buổi) — cờ Subjects.RequiresGrouping
+// (mặc định 1/true = cần chia nhóm như trước). Nơi gọi getRequiredGroupCount phải tự kiểm tra cờ này
+// TRƯỚC, bỏ qua hoàn toàn bảng mốc sĩ số nếu = false, thay vì sửa getRequiredGroupCount (hàm này vẫn
+// giữ nguyên thuần theo sĩ số vì còn dùng chung với bản sao ở frontend, không có DB để tra cờ).
+export async function getSubjectRequiresGrouping(subjectId: number): Promise<boolean> {
+  const pool = await getPool();
+  const result = await pool
+    .request()
+    .input("subjectId", sql.Int, subjectId)
+    .query<{ RequiresGrouping: boolean }>(`SELECT RequiresGrouping FROM Subjects WHERE SubjectId = @subjectId`);
+  return result.recordset[0]?.RequiresGrouping ?? true;
+}
+
 const ROOM_TYPE_LABEL: Record<string, string> = {
   LyThuyet: "Phòng lý thuyết",
   ThucHanh: "Phòng thực hành",

@@ -6,6 +6,7 @@ import {
   getPeriodMinutes, getTotalPeriodsForSubject, getPeriodTimelineForSubject, getWeeksInSemester,
   checkRoomCapacity, checkSessionLength, checkDailyHoursLimit, checkTeacherWeeklyHours, checkTeacherYearlyHours,
   CAPACITY_POLICY_BY_ROOM_TYPE, ROOM_TYPES_BY_CATEGORY, roomCategoryFor, getRequiredGroupCount, getSubjectRoomIds,
+  getSubjectRequiresGrouping,
 } from "./policyRules";
 import { checkScheduleConflict, findHoliday } from "./conflictCheck";
 import { checkTrainingModeRule, getClassTrainingMode, classifyPeriod, getWeekday } from "./trainingModeCheck";
@@ -132,6 +133,11 @@ interface PlaceBlockParams {
   // periods === maxPerSession + 1 ĐÚNG BẰNG giá trị này, đây là ngoại lệ có chủ đích (không phải lỗi),
   // nên BỎ QUA checkSessionLength cho riêng trường hợp này thay vì bị chặn cứng như buổi thường.
   maxPerSession: number;
+  // Việc BT: false khi môn KHÔNG cần chia nhóm (Subjects.RequiresGrouping = 0, vd Giáo dục thể chất
+  // học ở sân bãi rộng) — dùng để checkRoomCapacity so với sức chứa THẬT của phòng (như buổi ĐÃ tách
+  // nhóm) thay vì mốc chính sách MaxStudentsPerPracticeGroup/MaxStudentsPerClinicalGroup, vì thực chất
+  // không có nhóm nào cả dù groupLabel vẫn NULL (cả lớp học chung). Theory luôn true (không áp dụng).
+  requiresGrouping: boolean;
 }
 
 // Việc BM (vấn đề 2): 1 buổi (1 Ngày + 1 Ca cụ thể) của 1 Lớp — buổi KHÔNG tách nhóm (groupLabel
@@ -295,7 +301,7 @@ async function tryPlaceSingleBlock(ctx: RunContext, params: PlaceBlockParams): P
         // lúc đó params.totalStudents ĐÃ là sĩ số riêng của 1 nhóm (perGroupSize tính sẵn ở đó), so
         // với sức chứa THẬT của phòng thay vì mốc chính sách.
         const capacityCheck = await checkRoomCapacity({
-          roomId, totalStudents: params.totalStudents, isGroupSplit: !!params.groupLabel,
+          roomId, totalStudents: params.totalStudents, isGroupSplit: !!params.groupLabel || !params.requiresGrouping,
         });
         if (capacityCheck.violated) continue;
 
@@ -421,11 +427,17 @@ async function processSubjectPart(
   // Việc BH: số nhóm cần tách cho Thực hành/Lâm sàng dùng bảng mốc cố định getRequiredGroupCount
   // (không còn chia trần theo policy MaxStudentsPerPracticeGroup/MaxStudentsPerClinicalGroup) — Lý
   // thuyết không thuộc phạm vi bảng mốc này, giữ nguyên cách tính cũ theo MaxStudentsPerTheoryRoom.
+  // Việc BT: môn Thực hành/Lâm sàng có thể KHÔNG cần chia nhóm (Subjects.RequiresGrouping = 0) — bỏ
+  // qua hoàn toàn bảng mốc sĩ số, luôn 1 nhóm duy nhất (cả lớp học chung). Không áp dụng cho Lý thuyết
+  // (roomCategory LyThuyet không thuộc phạm vi tính năng này).
+  const requiresGrouping = (roomCategory === "ThucHanh" || roomCategory === "LamSang")
+    ? await getSubjectRequiresGrouping(task.subjectId)
+    : true;
   let groupCount: number;
   if (roomCategory === "ThucHanh") {
-    groupCount = getRequiredGroupCount(classSize, "Practice");
+    groupCount = requiresGrouping ? getRequiredGroupCount(classSize, "Practice") : 1;
   } else if (roomCategory === "LamSang") {
-    groupCount = getRequiredGroupCount(classSize, "Clinical");
+    groupCount = requiresGrouping ? getRequiredGroupCount(classSize, "Clinical") : 1;
   } else {
     const capacityLimit = await getPolicyValue(CAPACITY_POLICY_BY_ROOM_TYPE[roomCategory]);
     groupCount = classSize > capacityLimit ? Math.ceil(classSize / capacityLimit) : 1;
@@ -447,7 +459,7 @@ async function processSubjectPart(
       const params: PlaceBlockParams = {
         subjectId: task.subjectId, sessionType, periods: blockSize, periodMinutes,
         eligibleRoomIds, teacherIds: task.teacherIds, totalStudents: classSize,
-        isClinical: roomCategory === "LamSang", maxPerSession,
+        isClinical: roomCategory === "LamSang", maxPerSession, requiresGrouping,
       };
       const result = groupCount > 1
         ? await tryPlaceGroupSplitBlock(ctx, { ...params, groupCount })

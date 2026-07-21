@@ -2,7 +2,7 @@ import { Response, NextFunction } from "express";
 import { sql, getPool } from "../config/db";
 import { checkScheduleConflict, findHoliday, checkExamPeriodWarning } from "../utils/conflictCheck";
 import { checkTrainingModeRule, getClassTrainingMode } from "../utils/trainingModeCheck";
-import { checkRoomCapacity, checkSessionLength, checkDailyHoursLimit, checkTeacherWeeklyHours, checkTeacherYearlyHours, getClassSize, getTotalPeriodsForSubject, getPeriodTimelineForSubject, getRoomInfo, getRequiredGroupCount, checkSubjectRoom } from "../utils/policyRules";
+import { checkRoomCapacity, checkSessionLength, checkDailyHoursLimit, checkTeacherWeeklyHours, checkTeacherYearlyHours, getClassSize, getTotalPeriodsForSubject, getPeriodTimelineForSubject, getRoomInfo, getRequiredGroupCount, getSubjectRequiresGrouping, checkSubjectRoom } from "../utils/policyRules";
 import { writeAuditLog } from "../utils/auditLog";
 import { notifyTeachers } from "../utils/notify";
 import { AuthRequest } from "../types";
@@ -26,14 +26,25 @@ async function getClassSubjectNames(classId: number, subjectId: number): Promise
 // khác NULL) phải so sức chứa THẬT của phòng với sĩ số RIÊNG của nhóm đó (Math.ceil(sĩ số cả lớp /
 // số nhóm theo bảng mốc getRequiredGroupCount) — không phải cả lớp; dòng học chung cả lớp
 // (groupLabel NULL, vd Lý thuyết) giữ nguyên so với mốc chính sách như trước, không đổi gì.
+// Việc BT: dòng học chung cả lớp (groupLabel NULL) ở phòng Thực hành/Lâm sàng NHƯNG môn không cần
+// chia nhóm (Subjects.RequiresGrouping = 0) — cũng so với sức chứa THẬT của phòng (như dòng đã tách
+// nhóm) thay vì mốc chính sách MaxStudentsPerPracticeGroup/MaxStudentsPerClinicalGroup, vì thực chất
+// không có nhóm nào cả (cả lớp học chung ở phòng đủ rộng, vd sân bãi Giáo dục thể chất).
 async function capacityCheckParamsFor(
-  roomId: number, classSize: number, groupLabel: string | null
+  roomId: number, classSize: number, groupLabel: string | null, subjectId?: number
 ): Promise<{ roomId: number; totalStudents: number; isGroupSplit: boolean }> {
-  if (!groupLabel) return { roomId, totalStudents: classSize, isGroupSplit: false };
   const room = await getRoomInfo(roomId);
-  const sessionTypeBracket = room?.RoomType === "LamSang" ? "Clinical" : "Practice";
-  const totalStudents = Math.ceil(classSize / getRequiredGroupCount(classSize, sessionTypeBracket));
-  return { roomId, totalStudents, isGroupSplit: true };
+  if (groupLabel) {
+    const sessionTypeBracket = room?.RoomType === "LamSang" ? "Clinical" : "Practice";
+    const totalStudents = Math.ceil(classSize / getRequiredGroupCount(classSize, sessionTypeBracket));
+    return { roomId, totalStudents, isGroupSplit: true };
+  }
+  const isPracticeRoom = room?.RoomType === "ThucHanh" || room?.RoomType === "Labo" || room?.RoomType === "LamSang";
+  if (isPracticeRoom && subjectId) {
+    const requiresGrouping = await getSubjectRequiresGrouping(subjectId);
+    if (!requiresGrouping) return { roomId, totalStudents: classSize, isGroupSplit: true };
+  }
+  return { roomId, totalStudents: classSize, isGroupSplit: false };
 }
 
 function conflictMessage(conflict: { roomUnavailable: unknown[]; teacherUnavailable: unknown[] }): string {
@@ -255,7 +266,9 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
     }
 
     const classSize = await getClassSize(classId);
-    const capacityCheck = await checkRoomCapacity({ roomId, totalStudents: classSize });
+    const capacityCheck = await checkRoomCapacity(
+      await capacityCheckParamsFor(roomId, classSize, null, subjectId)
+    );
     if (capacityCheck.violated) {
       res.status(400).json({ message: capacityCheck.message });
       return;
@@ -391,7 +404,7 @@ export async function update(req: AuthRequest, res: Response, next: NextFunction
     const existingGroupLabel = existingGroupResult.recordset[0]?.GroupLabel ?? null;
 
     const capacityCheck = await checkRoomCapacity(
-      await capacityCheckParamsFor(roomId as number, classSize, existingGroupLabel)
+      await capacityCheckParamsFor(roomId as number, classSize, existingGroupLabel, subjectId)
     );
     if (capacityCheck.violated) {
       res.status(400).json({ message: capacityCheck.message });
@@ -846,7 +859,7 @@ export async function copyWeek(req: AuthRequest, res: Response, next: NextFuncti
       // Việc BH: dòng nguồn ĐÃ tách nhóm (row.GroupLabel khác NULL) — kiểm tra sức chứa đúng theo sĩ
       // số RIÊNG của nhóm đó, không phải cả lớp.
       const capacityCheck = await checkRoomCapacity(
-        await capacityCheckParamsFor(row.RoomId, classSize, row.GroupLabel)
+        await capacityCheckParamsFor(row.RoomId, classSize, row.GroupLabel, row.SubjectId)
       );
       if (capacityCheck.violated) {
         skippedConflicts.push(`${row.StartTime}-${row.EndTime} ngày ${newDate}: ${capacityCheck.message}`);

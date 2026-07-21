@@ -14,6 +14,7 @@ interface SubjectBody {
   examHours?: number;
   category?: string | null;
   isActive?: boolean;
+  requiresGrouping?: boolean;
 }
 
 interface BulkSubjectRow {
@@ -65,7 +66,8 @@ export async function list(req: AuthRequest, res: Response, next: NextFunction):
     const result = await request.query(`
       SELECT sub.SubjectId, sub.SubjectCode, sub.SubjectName, sub.FacultyId, f.FacultyName,
              sub.MajorId, m.MajorName, sub.Category,
-             sub.Credits, sub.TheoryHours, sub.PracticeHours, sub.ExamHours, sub.IsActive
+             sub.Credits, sub.TheoryHours, sub.PracticeHours, sub.ExamHours, sub.IsActive,
+             sub.RequiresGrouping
       FROM Subjects sub
       LEFT JOIN Faculties f ON f.FacultyId = sub.FacultyId
       LEFT JOIN Majors m ON m.MajorId = sub.MajorId
@@ -80,7 +82,7 @@ export async function list(req: AuthRequest, res: Response, next: NextFunction):
 
 export async function create(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { subjectName, subjectCode, facultyId, majorId, credits, theoryHours, practiceHours, examHours, category } =
+    const { subjectName, subjectCode, facultyId, majorId, credits, theoryHours, practiceHours, examHours, category, requiresGrouping } =
       req.body as SubjectBody;
     if (!subjectName) {
       res.status(400).json({ message: "Thiếu tên môn học" });
@@ -122,10 +124,11 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
       .input("practiceHours", sql.Int, practiceHours || 0)
       .input("examHours", sql.Int, examHours || 0)
       .input("category", sql.NVarChar, categoryResult.value)
+      .input("requiresGrouping", sql.Bit, requiresGrouping ?? true)
       .query<{ SubjectId: number }>(`
-        INSERT INTO Subjects (SubjectName, SubjectCode, FacultyId, MajorId, Credits, TheoryHours, PracticeHours, ExamHours, Category)
+        INSERT INTO Subjects (SubjectName, SubjectCode, FacultyId, MajorId, Credits, TheoryHours, PracticeHours, ExamHours, Category, RequiresGrouping)
         OUTPUT INSERTED.SubjectId
-        VALUES (@subjectName, @subjectCode, @facultyId, @majorId, @credits, @theoryHours, @practiceHours, @examHours, @category)
+        VALUES (@subjectName, @subjectCode, @facultyId, @majorId, @credits, @theoryHours, @practiceHours, @examHours, @category, @requiresGrouping)
       `);
     res.status(201).json({ subjectId: result.recordset[0].SubjectId });
   } catch (err) {
@@ -144,7 +147,7 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
 export async function update(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   try {
     const { id } = req.params;
-    const { subjectName, subjectCode, facultyId, majorId, credits, theoryHours, practiceHours, examHours, category, isActive } =
+    const { subjectName, subjectCode, facultyId, majorId, credits, theoryHours, practiceHours, examHours, category, isActive, requiresGrouping } =
       req.body as SubjectBody;
     if (!subjectCode || !subjectCode.trim()) {
       res.status(400).json({ message: "Thiếu mã môn — mã môn bắt buộc và phải duy nhất" });
@@ -181,10 +184,11 @@ export async function update(req: AuthRequest, res: Response, next: NextFunction
       .input("examHours", sql.Int, examHours || 0)
       .input("category", sql.NVarChar, categoryResult.value)
       .input("isActive", sql.Bit, isActive ?? true)
+      .input("requiresGrouping", sql.Bit, requiresGrouping ?? true)
       .query(`
         UPDATE Subjects SET SubjectName=@subjectName, SubjectCode=@subjectCode, FacultyId=@facultyId,
           MajorId=@majorId, Credits=@credits, TheoryHours=@theoryHours, PracticeHours=@practiceHours,
-          ExamHours=@examHours, Category=@category, IsActive=@isActive
+          ExamHours=@examHours, Category=@category, IsActive=@isActive, RequiresGrouping=@requiresGrouping
         WHERE SubjectId = @id
       `);
     res.json({ message: "Đã cập nhật" });

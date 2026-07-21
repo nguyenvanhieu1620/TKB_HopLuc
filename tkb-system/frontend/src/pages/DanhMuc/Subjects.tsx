@@ -16,6 +16,10 @@ interface SubjectForm {
   examHours: string;
   category: string;
   isActive: boolean;
+  // Việc BT: môn Thực hành/Lâm sàng có CẦN chia nhóm theo bảng mốc sĩ số hay không — mặc định TICK
+  // (true, đúng hành vi hiện tại) khi tạo mới. Bỏ tick khi cả lớp học chung 1 buổi không cần tách
+  // nhóm (vd Giáo dục thể chất học ở sân bãi rộng).
+  requiresGrouping: boolean;
   // Việc BR: Phòng Thực hành/Lâm sàng cụ thể phù hợp với môn này — rỗng = chưa cấu hình riêng (khi
   // xếp lịch sẽ cho chọn mọi phòng đúng loại RoomType như trước, xem checkSubjectRoom backend).
   roomIds: string[];
@@ -23,7 +27,7 @@ interface SubjectForm {
 
 const emptyForm: SubjectForm = {
   subjectCode: "", subjectName: "", facultyId: "", majorId: "", credits: "", theoryHours: "", practiceHours: "", examHours: "",
-  category: "", isActive: true, roomIds: [],
+  category: "", isActive: true, requiresGrouping: true, roomIds: [],
 };
 
 // Việc BR: chỉ các loại phòng liên quan Thực hành/Lâm sàng mới cần gán riêng — Lý thuyết không thuộc
@@ -219,6 +223,7 @@ export default function Subjects() {
       examHours: Number(form.examHours) || 0,
       category: form.category || undefined,
       isActive: form.isActive,
+      requiresGrouping: form.requiresGrouping,
     };
     try {
       let subjectId = editingId;
@@ -254,6 +259,7 @@ export default function Subjects() {
       examHours: String(item.ExamHours),
       category: item.Category || "",
       isActive: item.IsActive,
+      requiresGrouping: item.RequiresGrouping,
       roomIds: roomsRes.data.map((r) => String(r.RoomId)),
     });
   }
@@ -518,6 +524,11 @@ export default function Subjects() {
             onChange={(e) => setForm({ ...form, isActive: e.target.checked })} />
           Đang sử dụng
         </label>
+        <label className="flex items-center gap-2">
+          <input type="checkbox" checked={form.requiresGrouping}
+            onChange={(e) => setForm({ ...form, requiresGrouping: e.target.checked })} />
+          Cần chia nhóm khi Thực hành/Lâm sàng
+        </label>
 
         <div className="w-full">
           <p className="hint mb-1">
@@ -554,7 +565,7 @@ export default function Subjects() {
         <thead>
           <tr>
             <th>#</th><th>Mã môn</th><th>Tên môn</th><th>Ngành</th><th>Khoa</th><th>Tín chỉ</th>
-            <th>LT</th><th>TH</th><th>Thi</th><th>Phân loại</th><th>Trạng thái</th><th></th>
+            <th>LT</th><th>TH</th><th>Thi</th><th>Phân loại</th><th>Chia nhóm</th><th>Trạng thái</th><th></th>
           </tr>
         </thead>
         <tbody>
@@ -570,6 +581,7 @@ export default function Subjects() {
               <td>{it.PracticeHours}</td>
               <td>{it.ExamHours}</td>
               <td>{CATEGORY_LABEL[it.Category || ""] || "—"}</td>
+              <td>{it.RequiresGrouping ? "Có" : "Không"}</td>
               <td>
                 {it.IsActive
                   ? <span className="text-[11px] px-1.5 py-0.5 rounded bg-green-100 text-green-700">Đang sử dụng</span>

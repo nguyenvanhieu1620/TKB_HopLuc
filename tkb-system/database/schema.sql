@@ -78,6 +78,10 @@ CREATE TABLE Subjects (
     TheoryHours   INT             NOT NULL DEFAULT 0, -- giờ lý thuyết
     PracticeHours INT             NOT NULL DEFAULT 0, -- giờ thực hành
     ExamHours     INT             NOT NULL DEFAULT 0, -- giờ thi/kiểm tra
+    -- Việc BT: môn Thực hành/Lâm sàng có CẦN chia nhóm theo bảng mốc sĩ số (getRequiredGroupCount) hay
+    -- không — mặc định 1 (cần chia nhóm, đúng đa số môn). 0 = cả lớp học chung 1 buổi không tách nhóm
+    -- (vd Giáo dục thể chất học ở sân bãi rộng).
+    RequiresGrouping BIT          NOT NULL DEFAULT 1,
     IsActive      BIT             NOT NULL DEFAULT 1,
     CreatedAt     DATETIME2       NOT NULL DEFAULT SYSDATETIME(),
     CONSTRAINT FK_Subjects_Faculty FOREIGN KEY (FacultyId) REFERENCES Faculties(FacultyId),

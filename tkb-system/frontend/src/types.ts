@@ -68,6 +68,8 @@ export interface Subject {
   PracticeHours: number;
   ExamHours: number;
   IsActive: boolean;
+  // Việc BT: môn Thực hành/Lâm sàng có CẦN chia nhóm theo bảng mốc sĩ số hay không — mặc định true.
+  RequiresGrouping: boolean;
 }
 
 export interface CurriculumItem {

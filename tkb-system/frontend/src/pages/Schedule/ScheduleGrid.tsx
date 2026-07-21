@@ -555,12 +555,16 @@ export default function ScheduleGrid() {
   // Việc BH: Thực hành/Lâm sàng dùng bảng mốc cố định getRequiredGroupCount (không còn so trực tiếp
   // với policy MaxStudentsPerPracticeGroup/MaxStudentsPerClinicalGroup) — hint chỉ hiện khi bảng mốc
   // yêu cầu >1 nhóm. Lý thuyết không thuộc bảng mốc này, giữ nguyên so với policy như trước.
+  // Việc BT: môn không cần chia nhóm (Subjects.RequiresGrouping = false) — bỏ hẳn gợi ý này, cả lớp
+  // học chung 1 buổi dù sĩ số lớn (vd Giáo dục thể chất học ở sân bãi rộng).
   const capacityHint = useMemo(() => {
     if (!selectedFormClass || !form.roomId) return null;
     const room = rooms.find((r) => String(r.RoomId) === form.roomId);
     if (!room) return null;
 
     if (room.RoomType === "ThucHanh" || room.RoomType === "Labo" || room.RoomType === "LamSang") {
+      const subject = subjects.find((s) => String(s.SubjectId) === form.subjectId);
+      if (subject && subject.RequiresGrouping === false) return null;
       const sessionTypeBracket = room.RoomType === "LamSang" ? "Clinical" : "Practice";
       const groupsNeeded = getRequiredGroupCount(selectedFormClass.ClassSize, sessionTypeBracket);
       if (groupsNeeded <= 1) return null;
@@ -572,7 +576,7 @@ export default function ScheduleGrid() {
     const max = policies[policyKey];
     if (selectedFormClass.ClassSize <= max) return null;
     return `Lớp ${selectedFormClass.ClassName} có ${selectedFormClass.ClassSize} người, vượt giới hạn ${max} người/ca của loại phòng này — dùng "Xếp theo nhóm" để tách nhóm học song song.`;
-  }, [selectedFormClass, form.roomId, rooms, policies]);
+  }, [selectedFormClass, form.roomId, form.subjectId, subjects, rooms, policies]);
 
   async function loadLookups() {
     const [cls, subj, room, tch, ses, policy, coh] = await Promise.all([
