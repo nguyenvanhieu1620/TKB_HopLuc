@@ -127,6 +127,8 @@ interface PlaceBlockParams {
   groupLabel?: string | null;
   // Việc BN: true khi block này là Lâm sàng (roomCategory === "LamSang") — dùng để loại Ca Tối khỏi
   // danh sách Ca khả dụng (vấn đề 1), độc lập với checkTrainingModeRule.
+  // Việc BV: mở rộng — CŨNG true khi toàn bộ eligibleRoomIds của block là phòng Sân bãi (RoomType =
+  // SanBai, thường dùng cho Giáo dục thể chất) — không phù hợp học buổi tối, cùng nguyên tắc Lâm sàng.
   isClinical?: boolean;
   // Giới hạn tối đa/buổi bình thường (MaxTheoryHoursPerSession/MaxPracticeHoursPerSession) — dùng để
   // nhận diện block "ghép buổi cuối" của computeBlockPlan (Thực hành/Lâm sàng, dư 1 tiết): khi
@@ -213,12 +215,12 @@ function buildLTPrioritySlots(dates: string[], availableSessions: SessionRow[]):
   ];
 }
 
-// Việc BN/BO: sinh danh sách (Ngày, Ca) khả dụng trong khung [rangeStart, rangeEnd] theo ĐÚNG thứ tự
-// ưu tiên cần thử trước — vấn đề 1: Lâm sàng KHÔNG được xếp Ca Tối (loại khỏi danh sách TRƯỚC khi tính
-// slot, độc lập/chặt hơn checkTrainingModeRule — CQ/LT thường vẫn xếp Tối được nếu hợp lệ, riêng Lâm
-// sàng thì không, bất kể hệ đào tạo); vấn đề 2: Lớp kiểu Liên thông theo đúng 4 nhóm ưu tiên của
-// buildLTPrioritySlots ở trên — chỉ cần đổi thứ tự DANH SÁCH, tryPlaceSingleBlock vẫn duyệt tuần tự
-// như cũ nên không cần đổi logic thử-xếp bên dưới.
+// Việc BN/BO/BV: sinh danh sách (Ngày, Ca) khả dụng trong khung [rangeStart, rangeEnd] theo ĐÚNG thứ
+// tự ưu tiên cần thử trước — vấn đề 1: Lâm sàng, và (Việc BV) block chỉ dùng phòng Sân bãi, KHÔNG được
+// xếp Ca Tối (loại khỏi danh sách TRƯỚC khi tính slot, độc lập/chặt hơn checkTrainingModeRule — CQ/LT
+// thường vẫn xếp Tối được nếu hợp lệ, riêng 2 trường hợp này thì không, bất kể hệ đào tạo); vấn đề 2:
+// Lớp kiểu Liên thông theo đúng 4 nhóm ưu tiên của buildLTPrioritySlots ở trên — chỉ cần đổi thứ tự
+// DANH SÁCH, tryPlaceSingleBlock vẫn duyệt tuần tự như cũ nên không cần đổi logic thử-xếp bên dưới.
 function buildDateSessionSlots(ctx: RunContext, isClinical: boolean): DateSessionSlot[] {
   const dates: string[] = [];
   let cursor = ctx.rangeStart;
@@ -421,6 +423,10 @@ async function processSubjectPart(
     return { scheduled: 0, failureReason: `Không có phòng ${label} nào khả dụng` };
   }
 
+  // Việc BV: TOÀN BỘ phòng khả dụng của block này là Sân bãi (vd Giáo dục thể chất đã gán riêng
+  // SubjectRooms toàn Sân bãi) — không phù hợp học buổi Tối, loại Ca Tối giống nguyên tắc Lâm sàng.
+  const isAllSanBai = eligibleRoomIds.every((id) => rooms.find((r) => r.RoomId === id)?.RoomType === "SanBai");
+
   const periodMinutes = await getPeriodMinutes(roomCategory);
   const maxPerSessionKey = sessionType === "Theory" ? "MaxTheoryHoursPerSession" : "MaxPracticeHoursPerSession";
   const maxPerSession = await getPolicyValue(maxPerSessionKey);
@@ -459,7 +465,7 @@ async function processSubjectPart(
       const params: PlaceBlockParams = {
         subjectId: task.subjectId, sessionType, periods: blockSize, periodMinutes,
         eligibleRoomIds, teacherIds: task.teacherIds, totalStudents: classSize,
-        isClinical: roomCategory === "LamSang", maxPerSession, requiresGrouping,
+        isClinical: roomCategory === "LamSang" || isAllSanBai, maxPerSession, requiresGrouping,
       };
       const result = groupCount > 1
         ? await tryPlaceGroupSplitBlock(ctx, { ...params, groupCount })
