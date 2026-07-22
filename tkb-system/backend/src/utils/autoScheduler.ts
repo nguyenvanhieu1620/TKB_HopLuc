@@ -713,7 +713,11 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
     classId, semesterId,
     trainingMode: classInfo?.trainingMode ?? null,
     majorTrainingMode: majorClassInfo?.trainingMode ?? null,
-    rangeStart: targetWeek.start,
+    // getWeeksInSemester tính Tuần 1 theo Thứ 2 của tuần CHỨA StartDate — nếu Kỳ bắt đầu giữa tuần
+    // (không phải Thứ 2), Tuần 1 kéo dài NGƯỢC về vài ngày TRƯỚC StartDate thật (vd Kỳ bắt đầu Thứ 4
+    // thì Tuần 1 tính từ Thứ 2 liền trước) — cắt về đúng StartDate để không xếp vào ngày trước khi Kỳ
+    // thật sự bắt đầu, cùng nguyên tắc đã cắt rangeEnd về teachingEnd ở dưới.
+    rangeStart: targetWeek.start < semester.StartDate ? semester.StartDate : targetWeek.start,
     rangeEnd: targetWeek.end > teachingEnd ? teachingEnd : targetWeek.end,
     sessions: sessionsResult.recordset,
     teacherLoadTally: new Map(),
