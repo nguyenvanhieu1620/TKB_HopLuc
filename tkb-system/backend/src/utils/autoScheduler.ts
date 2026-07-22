@@ -55,6 +55,12 @@ interface SubjectTask {
   category: string | null;
   theoryRemaining: number;
   practiceRemaining: number;
+  // Việc BZ: số tiết ĐÃ xếp TRƯỚC tuần đang chạy (không phải còn thiếu) — dùng để so với tiến độ lý
+  // tưởng theo đường thẳng (targetTotal × weekNumber / tổng số tuần) nhằm PHÁT HIỆN môn đã VƯỢT tiến
+  // độ (do 1 block luôn xếp trọn vẹn tối đa/buổi, thường LỚN HƠN NHIỀU so với chỉ tiêu tuần nhỏ khi
+  // còn nhiều tuần) — nếu đã vượt, tạm HOÃN xử lý môn đó tuần này để dành chỗ, tránh dồn cục đầu Kỳ.
+  theoryDone: number;
+  practiceDone: number;
   teacherIds: number[];
 }
 
@@ -617,6 +623,7 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
         category: row.Category,
         theoryRemaining: Math.max(0, targets.theoryTarget - theoryDone),
         practiceRemaining: Math.max(0, targets.practiceTarget - practiceDone),
+        theoryDone, practiceDone,
         teacherIds: teacherResult.recordset.map((t) => t.TeacherId),
       };
     })
@@ -632,6 +639,42 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
       theoryQuota: task.theoryRemaining > 0 ? Math.ceil(task.theoryRemaining / weeksRemaining) : 0,
       practiceQuota: task.practiceRemaining > 0 ? Math.ceil(task.practiceRemaining / weeksRemaining) : 0,
     };
+  }
+
+  // Việc BZ: chẩn đoán qua log chi tiết nhiều tuần liên tiếp (lớp Dược K16A2) phát hiện: dù đã xoay
+  // vòng (Việc BY) và có "chỉ tiêu tuần" (quotaThisWeek), 1 block LUÔN xếp trọn vẹn tối đa/buổi (4-5
+  // tiết, theo computeBlockPlan) — khi còn nhiều tuần, quotaThisWeek = ceil(remaining/weeksRemaining)
+  // thường CHỈ 1-2 tiết, tức là 1 block ĐẦU TIÊN đã vượt xa chỉ tiêu tuần đó rồi (chứ không phải xếp
+  // dần đúng nhịp). Hệ quả: mỗi môn hoàn thành hết chỉ trong vài tuần LIÊN TỤC ĐẦU TIÊN nó được chạy
+  // (vì tuần nào cũng "được phép" ít nhất 1 block, và 1 block luôn dư dả hơn hẳn phần còn thiếu chia
+  // đều), thay vì dàn trải các buổi đó ra xuyên suốt các tuần còn lại của Kỳ — tuần cuối Kỳ vì vậy
+  // trống hẳn khi các môn đã xong từ lâu. computeQuotas (chỉ tiêu tuần) vẫn ĐÚNG về mặt toán học (số
+  // tiết trung bình cần/tuần), nhưng KHÔNG đủ để quyết định môn có "ĐẾN LƯỢT" tuần này hay chưa khi
+  // block tối thiểu luôn lớn hơn nhiều so với mức trung bình đó.
+  //
+  // SỬA (bản đầu, đã tự phát hiện lỗi khi test): thêm cổng "đúng tiến độ" — so số tiết ĐÃ xếp trước
+  // tuần này (done) với tiến độ lý tưởng theo ĐƯỜNG THẲNG tính từ tổng số tuần của Kỳ, hoãn hẳn môn
+  // "vượt tiến độ" tuần này. Test qua nhiều tuần liên tiếp cho thấy cách này gây hồi quy nghiêm trọng
+  // hơn: nhiều môn (đặc biệt phần Thực hành, khối lượng lớn) bị hoãn dồn dập tới mức KHÔNG CÒN ĐỦ TUẦN
+  // để xếp hết trước khi Kỳ kết thúc (trước đây dù dồn cục đầu Kỳ vẫn xếp HẾT được, sau khi hoãn quá
+  // tay lại xếp THIẾU hẳn — tệ hơn cả lỗi gốc). Nguyên nhân: hoãn does không phân biệt môn ĐANG THỰC
+  // SỰ CẦN xếp đều mỗi tuần (chỉ tiêu tuần đã xấp xỉ bằng hẳn 1 block, vd Thực hành khối lượng lớn khi
+  // Kỳ sắp hết) khỏi môn THỰC SỰ CÒN DƯ DẢ thời gian (chỉ tiêu tuần bé tí so với 1 block).
+  //
+  // SỬA ĐÚNG: chỉ hoãn khi chỉ tiêu tuần (quotaThisWeek) CÒN NHỎ HƠN HẲN 1 block tối thiểu cần dùng
+  // (maxPerSession của đúng phần Lý thuyết/Thực hành đang xét) — tức là còn NHIỀU thời gian dư so với
+  // khối lượng thật, hoãn không có rủi ro. Ngay khi quotaThisWeek đã chạm hoặc vượt maxPerSession (thời
+  // gian còn lại không còn dư dả nữa, xếp đều đặn mỗi tuần mới kịp), NGỪNG hoãn — xử lý bình thường mỗi
+  // tuần như trước Việc BZ, đảm bảo luôn xếp HẾT trước khi Kỳ kết thúc, không đánh đổi việc dàn đều lấy
+  // rủi ro thiếu tiết.
+  function shouldDeferForPacing(
+    done: number, remaining: number, quotaThisWeek: number, maxPerSession: number, weekNum: number, totalWeeks: number
+  ): boolean {
+    if (quotaThisWeek >= maxPerSession) return false;
+    const target = done + remaining;
+    if (target <= 0) return false;
+    const idealByThisWeek = Math.ceil((target * weekNum) / totalWeeks);
+    return done >= idealByThisWeek;
   }
 
   // Việc BK: sắp xếp môn xử lý TRONG TUẦN NÀY theo mức độ CẤP BÁCH (chỉ tiêu tuần = theoryQuota +
@@ -681,6 +724,12 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
     // — giữ mảng reasons để nối lại y hệt bản trước Việc BY, không rút gọn còn 1 câu.
     reasons: string[];
   }
+  // Việc BZ: cần maxPerSession của Thực hành trước cả khi gọi prepareSubjectPart, để
+  // shouldDeferForPacing xác định đúng "chỉ tiêu tuần đã chạm ngưỡng cần xếp đều đặn hay chưa" — lấy
+  // 1 lần dùng chung cho mọi môn (không phụ thuộc phòng cụ thể, chỉ phụ thuộc SessionType), tránh gọi
+  // lại getPolicyValue nhiều lần thừa trong vòng lặp. CHỈ cần cho Thực hành (xem lý do ở dưới, ngay
+  // trước theoryDueThisWeek/practiceDueThisWeek) — Lý thuyết không dùng cổng đúng tiến độ.
+  const practiceMaxPerSession = await getPolicyValue("MaxPracticeHoursPerSession");
   const processing: SubjectProcessing[] = [];
   for (const task of subjectTasks) {
     const totalRemaining = task.theoryRemaining + task.practiceRemaining;
@@ -710,7 +759,20 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
     let state: SubjectPartState | null = null;
     const reasons: string[] = [];
 
-    if (theoryQuota > 0) {
+    // Việc BZ: cổng "đúng tiến độ" — CHỈ áp dụng cho Thực hành/Lâm sàng, KHÔNG áp dụng cho Lý thuyết.
+    // Đã test: hoãn cả Lý thuyết (tổng số tiết thường NHỎ, 6-16 tiết) theo đường thẳng suốt CẢ Kỳ kéo
+    // dài việc hoàn thành Lý thuyết tới sát cuối Kỳ (vì mốc an toàn quotaThisWeek >= maxPerSession gần
+    // như KHÔNG BAO GIỜ đạt được với tổng nhỏ như vậy trải trên nhiều tuần) — mà Thực hành CHỈ được bắt
+    // đầu SAU KHI Lý thuyết xong (ràng buộc bên dưới), nên Lý thuyết bị hoãn kéo theo Thực hành (khối
+    // lượng LỚN hơn nhiều, 30-59 tiết) mất hết thời gian đệm, không đủ tuần còn lại để xếp — TỆ HƠN cả
+    // lỗi gốc. Lý thuyết vốn tổng nhỏ, để chạy KHÔNG hoãn (như trước Việc BZ) đã tự nhiên xong sớm
+    // trong vài tuần đầu — không cần dàn đều, và quan trọng hơn là NHƯỜNG chỗ sớm cho Thực hành có đủ
+    // trọn Kỳ để dàn đều đúng như mục tiêu Việc BZ.
+    const theoryDueThisWeek = theoryQuota > 0;
+    const practiceDueThisWeek = practiceQuota > 0
+      && !shouldDeferForPacing(task.practiceDone, task.practiceRemaining, practiceQuota, practiceMaxPerSession, weekNumber, weeks.length);
+
+    if (theoryDueThisWeek) {
       const prep = await prepareSubjectPart(task, "Theory", task.theoryRemaining, theoryQuota, rooms, cls.ClassSize);
       state = prep.state ?? null;
       if (prep.failureReason) reasons.push(prep.failureReason);
@@ -725,7 +787,7 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
     // hết slot VỪA bị dời Thực hành trong CÙNG 1 tuần, không phải if/else loại trừ nhau.
     if (practiceQuota > 0 && task.theoryRemaining > 0) {
       reasons.push(`Chưa xếp Thực hành/Lâm sàng — còn thiếu ${task.theoryRemaining} tiết Lý thuyết cần học xong trước`);
-    } else if (practiceQuota > 0) {
+    } else if (practiceDueThisWeek) {
       const prep = await prepareSubjectPart(task, "Practice", task.practiceRemaining, practiceQuota, rooms, cls.ClassSize);
       state = prep.state ?? null;
       if (prep.failureReason) reasons.push(prep.failureReason);
