@@ -1,7 +1,7 @@
 import { Response, NextFunction } from "express";
 import { sql, getPool } from "../config/db";
 import { checkScheduleConflict, findHoliday, checkExamPeriodWarning } from "../utils/conflictCheck";
-import { checkTrainingModeRule, getClassTrainingMode } from "../utils/trainingModeCheck";
+import { checkTrainingModeRule, getClassTrainingMode, getClassMajorTrainingMode } from "../utils/trainingModeCheck";
 import { checkRoomCapacity, checkSessionLength, checkDailyHoursLimit, checkTeacherWeeklyHours, checkTeacherYearlyHours, getClassSize, getTotalPeriodsForSubject, getPeriodTimelineForSubject, getRoomInfo, getRequiredGroupCount, getSubjectRequiresGrouping, checkSubjectRoom } from "../utils/policyRules";
 import { writeAuditLog } from "../utils/auditLog";
 import { notifyTeachers } from "../utils/notify";
@@ -355,8 +355,10 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
       }
     }
 
-    const classInfo = await getClassTrainingMode(classId);
-    const holiday = await findHoliday(scheduleDate, classInfo?.trainingMode);
+    // Việc CA: Lịch nghỉ tính theo hệ đào tạo GỐC của Ngành (KHÔNG qua SchedulePatternOverride) —
+    // khác với checkTrainingModeRule ngay dưới đây (vẫn ưu tiên override, đúng cho ngày/buổi).
+    const majorClassInfo = await getClassMajorTrainingMode(classId);
+    const holiday = await findHoliday(scheduleDate, majorClassInfo?.trainingMode);
     const trainingCheck = await checkTrainingModeRule({
       classId, scheduleDate, startTime, isMakeup,
     });
@@ -495,8 +497,9 @@ export async function update(req: AuthRequest, res: Response, next: NextFunction
       }
     }
 
-    const classInfo = await getClassTrainingMode(classId as number);
-    const holiday = await findHoliday(scheduleDate as string, classInfo?.trainingMode);
+    // Việc CA: Lịch nghỉ tính theo hệ đào tạo GỐC của Ngành (KHÔNG qua SchedulePatternOverride).
+    const majorClassInfo = await getClassMajorTrainingMode(classId as number);
+    const holiday = await findHoliday(scheduleDate as string, majorClassInfo?.trainingMode);
     const trainingCheck = await checkTrainingModeRule({
       classId: classId as number, scheduleDate: scheduleDate as string, startTime: startTime as string,
       isMakeup, excludeScheduleId: Number(id),
@@ -743,7 +746,11 @@ export async function mergedCreate(req: AuthRequest, res: Response, next: NextFu
       recordId: mergedSessionId, detail: req.body,
     });
 
-    const holiday = await findHoliday(scheduleDate, classTrainingInfos[0]?.trainingMode);
+    // Việc CA: Lịch nghỉ tính theo hệ đào tạo GỐC của Ngành (KHÔNG qua SchedulePatternOverride) —
+    // classTrainingInfos ở trên là hệ HIỆU LỰC (ưu tiên override), chỉ đúng cho kiểm tra "ghép được
+    // không" (checkTrainingModeRule-tương-đương), không dùng lại cho nghỉ lễ.
+    const majorClassInfo = await getClassMajorTrainingMode(classIds[0]);
+    const holiday = await findHoliday(scheduleDate, majorClassInfo?.trainingMode);
     const examPeriodWarning = await checkExamPeriodWarning(semesterId, scheduleDate);
 
     const warnings: string[] = [];
@@ -825,7 +832,8 @@ export async function copyWeek(req: AuthRequest, res: Response, next: NextFuncti
       return;
     }
 
-    const classInfo = await getClassTrainingMode(classId);
+    // Việc CA: dùng cho Lịch nghỉ bên dưới — hệ đào tạo GỐC của Ngành (KHÔNG qua SchedulePatternOverride).
+    const majorClassInfo = await getClassMajorTrainingMode(classId);
     const classSize = await getClassSize(classId);
 
     let created = 0;
@@ -842,7 +850,7 @@ export async function copyWeek(req: AuthRequest, res: Response, next: NextFuncti
 
       const newDate = shiftDateStr(row.ScheduleDate, offsetDays);
 
-      const holiday = await findHoliday(newDate, classInfo?.trainingMode);
+      const holiday = await findHoliday(newDate, majorClassInfo?.trainingMode);
       if (holiday) {
         skippedHolidays++;
         continue;
@@ -936,7 +944,7 @@ export async function copyWeek(req: AuthRequest, res: Response, next: NextFuncti
     if (created > 0 && notifiedTeacherIds.size > 0) {
       await notifyTeachers(
         Array.from(notifiedTeacherIds),
-        `TKB lớp ${classInfo?.className ?? classId} tuần ${targetWeekStart} đã được cập nhật, ${created} tiết mới`,
+        `TKB lớp ${majorClassInfo?.className ?? classId} tuần ${targetWeekStart} đã được cập nhật, ${created} tiết mới`,
         "Schedule",
         null
       );
@@ -1083,7 +1091,8 @@ export async function groupedCreate(req: AuthRequest, res: Response, next: NextF
       return;
     }
 
-    const classInfo = await getClassTrainingMode(classId);
+    // Việc CA: dùng cho Lịch nghỉ bên dưới — hệ đào tạo GỐC của Ngành (KHÔNG qua SchedulePatternOverride).
+    const majorClassInfo = await getClassMajorTrainingMode(classId);
     const pool = await getPool();
     const scheduleIds: number[] = [];
     const warnings: string[] = [];
@@ -1171,7 +1180,7 @@ export async function groupedCreate(req: AuthRequest, res: Response, next: NextF
         }
       }
 
-      const holiday = await findHoliday(group.scheduleDate!, classInfo?.trainingMode);
+      const holiday = await findHoliday(group.scheduleDate!, majorClassInfo?.trainingMode);
       if (holiday) warnings.push(`Nhóm "${group.groupLabel}" ngày ${group.scheduleDate} rơi vào ngày nghỉ lễ: ${holiday.Description}`);
 
       const trainingCheck = await checkTrainingModeRule({

@@ -57,6 +57,28 @@ export async function getClassTrainingMode(classId: number): Promise<{ trainingM
   return { trainingMode: row.SchedulePatternOverride ?? row.TrainingMode, className: row.ClassName };
 }
 
+// Việc CA: Hệ đào tạo GỐC của Ngành (Majors.TrainingMode) — KHÔNG qua SchedulePatternOverride, khác
+// với getClassTrainingMode() ở trên. Dùng RIÊNG cho việc tính Lịch nghỉ (findHoliday so Holidays.
+// AppliesTo với hệ này) — 1 lớp văn bằng 2 (Ngành hệ CQ, ghi đè lịch học kiểu LT vì học viên đi làm)
+// vẫn học đúng chương trình Chính quy nên vẫn nghỉ hè như mọi lớp CQ khác, dù NGÀY/BUỔI được xếp theo
+// kiểu LT (cuối tuần + tối) — 2 khái niệm độc lập, không dùng lẫn hàm của nhau: getClassTrainingMode()
+// (ưu tiên override) chỉ dùng cho checkTrainingModeRule/autoScheduler khi xác định ngày/buổi được
+// phép xếp; hàm này chỉ dùng cho nơi kiểm tra Holidays.AppliesTo.
+export async function getClassMajorTrainingMode(classId: number): Promise<{ trainingMode: TrainingMode | null; className: string } | null> {
+  const pool = await getPool();
+  const result = await pool
+    .request()
+    .input("classId", sql.Int, classId)
+    .query<{ TrainingMode: TrainingMode | null; ClassName: string }>(`
+      SELECT m.TrainingMode, c.ClassName
+      FROM Classes c INNER JOIN Majors m ON m.MajorId = c.MajorId
+      WHERE c.ClassId = @classId
+    `);
+  const row = result.recordset[0];
+  if (!row) return null;
+  return { trainingMode: row.TrainingMode, className: row.ClassName };
+}
+
 // Ràng buộc ngày/buổi theo hệ đào tạo:
 // - CQ: chỉ Thứ 2-6, và trong CÙNG 1 ngày chỉ được 1 buổi (Sáng HOẶC Chiều, không cả 2, không Tối).
 //   Các ngày khác nhau trong tuần được phép khác buổi nhau — chỉ so trong phạm vi 1 ngày cụ thể.

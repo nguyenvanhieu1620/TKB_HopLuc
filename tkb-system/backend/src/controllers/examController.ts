@@ -1,7 +1,7 @@
 import { Response, NextFunction } from "express";
 import { sql, getPool } from "../config/db";
 import { checkExamConflict, findHoliday } from "../utils/conflictCheck";
-import { getClassTrainingMode } from "../utils/trainingModeCheck";
+import { getClassMajorTrainingMode } from "../utils/trainingModeCheck";
 import { getPolicyValue } from "../utils/policyConfig";
 import { getTotalPeriodsForSubject, getPeriodTimelineForSubject } from "../utils/policyRules";
 import { writeAuditLog } from "../utils/auditLog";
@@ -222,8 +222,9 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
       }
     }
 
-    const classInfo = await getClassTrainingMode(classId);
-    const holiday = await findHoliday(examDate, classInfo?.trainingMode);
+    // Việc CA: Lịch nghỉ tính theo hệ đào tạo GỐC của Ngành (KHÔNG qua SchedulePatternOverride).
+    const majorClassInfo = await getClassMajorTrainingMode(classId);
+    const holiday = await findHoliday(examDate, majorClassInfo?.trainingMode);
     res.status(201).json({
       examId,
       warning: holiday ? `Ngày ${examDate} rơi vào ngày nghỉ lễ: ${holiday.Description}` : undefined,
@@ -299,8 +300,9 @@ export async function update(req: AuthRequest, res: Response, next: NextFunction
       }
     }
 
-    const classInfo = await getClassTrainingMode(classId as number);
-    const holiday = await findHoliday(examDate as string, classInfo?.trainingMode);
+    // Việc CA: Lịch nghỉ tính theo hệ đào tạo GỐC của Ngành (KHÔNG qua SchedulePatternOverride).
+    const majorClassInfo = await getClassMajorTrainingMode(classId as number);
+    const holiday = await findHoliday(examDate as string, majorClassInfo?.trainingMode);
     res.json({
       message: "Đã cập nhật lịch thi",
       warning: holiday ? `Ngày ${examDate} rơi vào ngày nghỉ lễ: ${holiday.Description}` : undefined,

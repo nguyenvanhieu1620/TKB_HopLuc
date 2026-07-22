@@ -9,7 +9,7 @@ import {
   getSubjectRequiresGrouping,
 } from "./policyRules";
 import { checkScheduleConflict, findHoliday } from "./conflictCheck";
-import { checkTrainingModeRule, getClassTrainingMode, classifyPeriod, getWeekday } from "./trainingModeCheck";
+import { checkTrainingModeRule, getClassTrainingMode, getClassMajorTrainingMode, classifyPeriod, getWeekday } from "./trainingModeCheck";
 import { writeAuditLog } from "./auditLog";
 import { notifyTeachers } from "./notify";
 
@@ -67,7 +67,12 @@ interface SubjectTask {
 interface RunContext {
   classId: number;
   semesterId: number;
+  // Hệ HIỆU LỰC (ưu tiên SchedulePatternOverride) — dùng để xác định ngày/buổi được phép xếp
+  // (buildDateSessionSlots/checkTrainingModeRule-tương-đương), KHÔNG dùng cho Lịch nghỉ.
   trainingMode: "CQ" | "LT" | null;
+  // Việc CA: Hệ GỐC của Ngành (Majors.TrainingMode, KHÔNG qua SchedulePatternOverride) — CHỈ dùng cho
+  // findHoliday, tách riêng khỏi trainingMode ở trên vì 2 mục đích độc lập (xem getClassMajorTrainingMode).
+  majorTrainingMode: "CQ" | "LT" | null;
   rangeStart: string;
   rangeEnd: string;
   sessions: SessionRow[];
@@ -253,7 +258,9 @@ function buildDateSessionSlots(ctx: RunContext, isClinical: boolean): DateSessio
 async function tryPlaceSingleBlock(ctx: RunContext, params: PlaceBlockParams): Promise<{ success: boolean; scheduleId?: number }> {
   const slots = buildDateSessionSlots(ctx, params.isClinical ?? false);
   for (const { date, session } of slots) {
-    const holiday = await findHoliday(date, ctx.trainingMode);
+    // Việc CA: Lịch nghỉ tính theo hệ GỐC của Ngành (majorTrainingMode) — KHÔNG dùng ctx.trainingMode
+    // (hệ hiệu lực, có thể đã bị SchedulePatternOverride ghi đè, chỉ đúng cho slot ngày/buổi ở trên).
+    const holiday = await findHoliday(date, ctx.majorTrainingMode);
     if (holiday) continue;
 
     const endTime = addMinutesToTime(session.StartTime, params.periods * params.periodMinutes);
@@ -573,6 +580,9 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
   const weeksRemaining = weeks.length - weekNumber + 1;
 
   const classInfo = await getClassTrainingMode(classId);
+  // Việc CA: hệ GỐC của Ngành (KHÔNG qua SchedulePatternOverride) — CHỈ dùng cho findHoliday, tách
+  // riêng khỏi classInfo.trainingMode ở trên (hệ HIỆU LỰC, dùng cho buildDateSessionSlots/ngày-buổi).
+  const majorClassInfo = await getClassMajorTrainingMode(classId);
 
   const sessionsResult = await pool.request().query<SessionRow>(`
     SELECT SessionId, CONVERT(VARCHAR(5), StartTime, 108) AS StartTime, CONVERT(VARCHAR(5), EndTime, 108) AS EndTime, SortOrder
@@ -702,6 +712,7 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
   const ctx: RunContext = {
     classId, semesterId,
     trainingMode: classInfo?.trainingMode ?? null,
+    majorTrainingMode: majorClassInfo?.trainingMode ?? null,
     rangeStart: targetWeek.start,
     rangeEnd: targetWeek.end > teachingEnd ? teachingEnd : targetWeek.end,
     sessions: sessionsResult.recordset,
