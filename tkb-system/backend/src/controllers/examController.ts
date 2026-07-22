@@ -89,6 +89,42 @@ export async function list(req: AuthRequest, res: Response, next: NextFunction):
   }
 }
 
+// Việc CB: chi tiết 1 ca thi để phục vụ form Sửa ngay trong ScheduleGrid.tsx — list() chỉ trả
+// Proctors dạng CHUỖI tên gộp (STRING_AGG), không đủ để tự chọn sẵn đúng giám thị trong multi-select
+// khi mở form Sửa (đối chiếu lại theo tên không đáng tin cậy nếu trùng tên) — trả thêm ProctorIds
+// dạng mảng số, cùng pattern GET /schedule/:id đã dùng cho teacherIds của buổi học thường.
+export async function getById(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { id } = req.params;
+    const pool = await getPool();
+    const result = await pool.request().input("id", sql.Int, id).query(`
+      SELECT e.ExamId, e.SemesterId, e.ClassId, c.ClassName, e.SubjectId, sub.SubjectName,
+             e.RoomId, r.RoomName,
+             CONVERT(VARCHAR(10), e.ExamDate, 23) AS ExamDate,
+             CONVERT(VARCHAR(5), e.StartTime, 108) AS StartTime,
+             CONVERT(VARCHAR(5), e.EndTime, 108) AS EndTime,
+             e.ExamType, e.Status, e.Note
+      FROM Exams e
+      INNER JOIN Classes c ON c.ClassId = e.ClassId
+      INNER JOIN Subjects sub ON sub.SubjectId = e.SubjectId
+      INNER JOIN Rooms r ON r.RoomId = e.RoomId
+      WHERE e.ExamId = @id
+    `);
+    const row = result.recordset[0];
+    if (!row) {
+      res.status(404).json({ message: "Không tìm thấy ca thi" });
+      return;
+    }
+
+    const proctorResult = await pool.request().input("id", sql.Int, id).query<{ TeacherId: number }>(
+      `SELECT TeacherId FROM ExamProctors WHERE ExamId = @id`
+    );
+    res.json({ ...row, ProctorIds: proctorResult.recordset.map((p) => p.TeacherId) });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // LTHI-02: 1 Lớp+Môn chỉ "đủ điều kiện thi" khi đã xếp ĐỦ CẢ HAI — số tiết Lý thuyết đạt chỉ tiêu
 // VÀ số tiết Thực hành đạt chỉ tiêu (Việc AV — trước đây gộp chung 1 tổng nên báo nhầm đủ điều
 // kiện dù toàn bộ giờ đã xếp đều là Lý thuyết, chưa xếp phút Thực hành nào, hoặc ngược lại).

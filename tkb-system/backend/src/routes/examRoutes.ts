@@ -6,6 +6,7 @@ const router = Router();
 
 router.get("/", authenticate, ctrl.list);
 router.get("/eligible", authenticate, requireRole("Admin"), ctrl.eligible);
+router.get("/:id", authenticate, ctrl.getById);
 router.post("/", authenticate, requireRole("Admin"), ctrl.create);
 router.put("/:id", authenticate, requireRole("Admin"), ctrl.update);
 router.delete("/:id", authenticate, requireRole("Admin"), ctrl.remove);

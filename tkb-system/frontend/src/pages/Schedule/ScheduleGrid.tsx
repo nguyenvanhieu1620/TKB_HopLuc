@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import axiosClient from "../../api/axiosClient";
 import { useAuth } from "../../context/AuthContext";
-import { ScheduleItem, ScheduleDetail, SchedulePeriodProgress, Semester, SchoolClass, Subject, Room, Teacher, Session, SchedulingPolicyItem, ApiErrorResponse, CopyWeekResult, CurriculumItem, Cohort, AutoScheduleReport, ExamItem } from "../../types";
+import { ScheduleItem, ScheduleDetail, SchedulePeriodProgress, Semester, SchoolClass, Subject, Room, Teacher, Session, SchedulingPolicyItem, ApiErrorResponse, CopyWeekResult, CurriculumItem, Cohort, AutoScheduleReport, ExamItem, ExamDetail, ExamType } from "../../types";
 import { AxiosError } from "axios";
 import { addDays, addMinutesToTime, colorForId, diffMinutesBetweenTimes, findTodayWeekIndex, getISOWeek, getISOWeekYear, getWeeksInSemester, mondayOfISOWeek, parseDateKey, startOfWeek, toDateKey, WEEKDAY_LABELS } from "../../../utils/calendar";
 import { buildWorkbook, downloadWorkbook } from "../../../utils/excel";
@@ -250,6 +250,27 @@ const EXAM_TYPE_LABELS: Record<string, string> = {
   TuLuan: "Tự luận", TracNghiem: "Trắc nghiệm", VanDap: "Vấn đáp", ThucHanh: "Thực hành",
 };
 
+// Việc CB: Tạo/Sửa Lịch thi ngay trong ScheduleGrid (chế độ "Theo kỳ") — tái sử dụng đúng các trường
+// và logic validate đã có ở ExamList.tsx (chọn Lớp/Kỳ/Môn/Phòng/Giám thị tối thiểu/Hình thức thi),
+// không đổi gì ở backend. status giữ ẩn (không có ô chọn) — CHỈ để gửi lại nguyên giá trị hiện tại khi
+// Sửa, tránh PUT /exams/:id vô tình reset về "ChuaThi" (backend mặc định "ChuaThi" nếu thiếu status).
+interface ExamForm {
+  semesterId: string;
+  classId: string;
+  subjectId: string;
+  roomId: string;
+  proctorIds: string[];
+  examDate: string;
+  sessionId: string;
+  examType: ExamType;
+  status: string;
+  note: string;
+}
+const emptyExamForm: ExamForm = {
+  semesterId: "", classId: "", subjectId: "", roomId: "",
+  proctorIds: [], examDate: "", sessionId: "", examType: "TuLuan", status: "ChuaThi", note: "",
+};
+
 // Gộp các buổi cùng MergedSessionId (ghép lớp) thành 1 nhóm hiển thị chung;
 // các buổi không ghép lớp giữ nguyên từng nhóm riêng lẻ. Ca thi không bao giờ ghép (không có
 // MergedSessionId), mỗi ca thi luôn là 1 nhóm riêng.
@@ -301,8 +322,10 @@ function EventCardContent({ ev, g, progress }: { ev: ScheduleItem & { eventType:
 }
 
 // Việc BI: thẻ CA THI — cố tình KHÔNG dùng colorForId(SubjectId) như thẻ buổi học thường, viền/nền
-// màu đỏ cố định (class calendar-event-card-exam) để phân biệt rõ dù nhìn lướt qua. Bấm vào thẻ điều
-// hướng sang trang Lịch thi để xem/sửa/xóa đầy đủ — Việc BI chỉ hiển thị THAM KHẢO tại đây.
+// màu đỏ cố định (class calendar-event-card-exam) để phân biệt rõ dù nhìn lướt qua.
+// Việc CB: ở chế độ "Theo kỳ", bấm vào thẻ (Admin) giờ mở form Sửa NGAY tại đây thay vì chỉ điều
+// hướng sang trang Lịch thi — xem handleOpenExamEdit. Chế độ "Tất cả các lớp" và người xem không phải
+// Admin vẫn điều hướng sang trang Lịch thi như trước (Việc BI).
 function ExamCardContent({ exam }: { exam: ExamItem }) {
   return (
     <>
@@ -354,10 +377,18 @@ export default function ScheduleGrid() {
   const [groupError, setGroupError] = useState("");
   const [showGroupForm, setShowGroupForm] = useState(false);
 
+  // Việc CB: Tạo/Sửa Lịch thi ngay tại đây — editingExamId khác null khi đang Sửa (mở từ thẻ ca thi
+  // trên calendar, xem handleOpenExamEdit), null khi đang Tạo mới.
+  const [examForm, setExamForm] = useState<ExamForm>(emptyExamForm);
+  const [examFormError, setExamFormError] = useState("");
+  const [showExamForm, setShowExamForm] = useState(false);
+  const [editingExamId, setEditingExamId] = useState<number | null>(null);
+
   const [policies, setPolicies] = useState<Record<string, number>>({});
 
   const [formSemesters, setFormSemesters] = useState<Semester[]>([]);
   const [mergeSemesters, setMergeSemesters] = useState<Semester[]>([]);
+  const [examFormSemesters, setExamFormSemesters] = useState<Semester[]>([]);
   const [groupSemesters, setGroupSemesters] = useState<Semester[]>([]);
 
   const [showCopyWeekForm, setShowCopyWeekForm] = useState(false);
@@ -479,6 +510,18 @@ export default function ScheduleGrid() {
   const groupSubjects = useMemo(
     () => (groupCurriculumSubjectInfo ? subjects.filter((s) => groupCurriculumSubjectInfo.has(s.SubjectId)) : []),
     [subjects, groupCurriculumSubjectInfo]
+  );
+
+  // Việc CB: tái sử dụng ĐÚNG cách lọc môn thi đã có ở ExamList.tsx — chỉ theo Ngành của Lớp (không
+  // qua Khung chương trình/Kỳ chặt như formSubjects ở trên, vì Lịch thi vốn không ràng buộc theo Kỳ
+  // học phần cụ thể như buổi học thường).
+  const selectedExamFormClass = useMemo(
+    () => classes.find((c) => String(c.ClassId) === examForm.classId) || null,
+    [classes, examForm.classId]
+  );
+  const examFormSubjects = useMemo(
+    () => (selectedExamFormClass ? subjects.filter((s) => s.MajorId === selectedExamFormClass.MajorId) : subjects),
+    [subjects, selectedExamFormClass]
   );
 
   // Việc BA: PracticeMode của môn đang chọn — quyết định nhãn "Loại buổi học" và nhóm phòng được
@@ -648,6 +691,7 @@ export default function ScheduleGrid() {
   useEffect(() => { loadSemestersFor(form.classId).then(setFormSemesters); }, [form.classId]);
   useEffect(() => { loadSemestersFor(mergeForm.classIds[0] || "").then(setMergeSemesters); }, [mergeForm.classIds[0]]);
   useEffect(() => { loadSemestersFor(groupForm.classId).then(setGroupSemesters); }, [groupForm.classId]);
+  useEffect(() => { loadSemestersFor(examForm.classId).then(setExamFormSemesters); }, [examForm.classId]);
 
   // Việc BI: gộp Schedule + Exams vào chung 1 chỉ mục theo ngày — mỗi phần tử gắn eventType để phần
   // render biết xử lý khác nhau (thẻ ca thi hiển thị khác hẳn thẻ buổi học thường).
@@ -896,6 +940,96 @@ export default function ScheduleGrid() {
     });
     setEditingScheduleId(scheduleId);
     setShowForm(true);
+  }
+
+  function handleCancelExamEdit() {
+    setEditingExamId(null);
+    setExamForm(emptyExamForm);
+    setShowExamForm(false);
+    setExamFormError("");
+  }
+
+  // Chỉ dọn trạng thái Sửa Lịch thi (không đụng tới form nếu đang KHÔNG sửa) — dùng khi chuyển sang
+  // tab khác để tránh mở nhầm form Sửa còn treo, cùng nguyên tắc clearEditingIfActive() ở trên.
+  function clearExamEditingIfActive() {
+    if (!editingExamId) return;
+    setEditingExamId(null);
+    setExamForm(emptyExamForm);
+  }
+
+  // Việc CB: mở form Sửa cho 1 ca thi đã xếp (bấm từ thẻ ca thi trên calendar) — nạp chi tiết KÈM
+  // ProctorIds dạng mảng số (GET /exams/:id, khác GET /exams danh sách chỉ có Proctors dạng chuỗi tên
+  // gộp) để tự chọn sẵn đúng giám thị trong multi-select.
+  async function handleOpenExamEdit(examId: number) {
+    setShowForm(false);
+    setShowMergeForm(false);
+    setShowGroupForm(false);
+    setExamFormError("");
+    const res = await axiosClient.get<ExamDetail>(`/exams/${examId}`);
+    const detail = res.data;
+    const session = sessions.find((s) => s.StartTime === detail.StartTime) || null;
+    setExamForm({
+      semesterId: String(detail.SemesterId),
+      classId: String(detail.ClassId),
+      subjectId: String(detail.SubjectId),
+      roomId: String(detail.RoomId),
+      proctorIds: detail.ProctorIds.map(String),
+      examDate: detail.ExamDate.slice(0, 10),
+      sessionId: session ? String(session.SessionId) : "",
+      examType: detail.ExamType,
+      status: detail.Status,
+      note: detail.Note || "",
+    });
+    setEditingExamId(examId);
+    setShowExamForm(true);
+  }
+
+  async function handleExamSubmit(e: FormEvent) {
+    e.preventDefault();
+    setExamFormError("");
+
+    const session = sessions.find((s) => s.SessionId === Number(examForm.sessionId));
+    if (!session) {
+      setExamFormError("Vui lòng chọn ca thi");
+      return;
+    }
+    const minProctors = policies.MinProctorsPerExam ?? 1;
+    if (examForm.proctorIds.length < minProctors) {
+      setExamFormError(`Cần tối thiểu ${minProctors} giám thị cho mỗi phòng thi`);
+      return;
+    }
+
+    const payload = {
+      semesterId: Number(examForm.semesterId),
+      classId: Number(examForm.classId),
+      subjectId: Number(examForm.subjectId),
+      roomId: Number(examForm.roomId),
+      proctorIds: examForm.proctorIds.map(Number),
+      examDate: examForm.examDate,
+      startTime: session.StartTime,
+      endTime: session.EndTime,
+      examType: examForm.examType,
+      status: examForm.status,
+      note: examForm.note,
+    };
+    try {
+      if (editingExamId) {
+        const res = await axiosClient.put<{ warning?: string }>(`/exams/${editingExamId}`, payload);
+        if (res.data.warning) alert(res.data.warning);
+      } else {
+        const res = await axiosClient.post<{ warning?: string }>("/exams", payload);
+        if (res.data.warning) alert(res.data.warning);
+      }
+      handleCancelExamEdit();
+      loadSchedule();
+    } catch (err) {
+      const axiosErr = err as AxiosError<ApiErrorResponse>;
+      const conflict = axiosErr.response?.data?.conflict;
+      let msg = axiosErr.response?.data?.message || "Có lỗi xảy ra";
+      if (conflict?.roomConflicts?.length) msg += ` — Trùng phòng ${conflict.roomConflicts.length} lần`;
+      if (conflict?.proctorConflicts?.length) msg += ` — Trùng giám thị ${conflict.proctorConflicts.length} lần`;
+      setExamFormError(msg);
+    }
   }
 
   async function handleMergeSubmit(e: FormEvent) {
@@ -1290,15 +1424,23 @@ export default function ScheduleGrid() {
           <>
             <button type="button" onClick={() => {
               if (editingScheduleId) { handleCancelEdit(); return; }
-              setShowForm((v) => !v); setShowMergeForm(false); setShowGroupForm(false); setError("");
+              clearExamEditingIfActive();
+              setShowForm((v) => !v); setShowMergeForm(false); setShowGroupForm(false); setShowExamForm(false); setError("");
             }}>
               {editingScheduleId ? "Đóng form (hủy sửa)" : showForm ? "Đóng form" : "+ Xếp buổi học mới"}
             </button>
-            <button type="button" onClick={() => { clearEditingIfActive(); setShowMergeForm((v) => !v); setShowForm(false); setShowGroupForm(false); setMergeError(""); }}>
+            <button type="button" onClick={() => { clearEditingIfActive(); clearExamEditingIfActive(); setShowMergeForm((v) => !v); setShowForm(false); setShowGroupForm(false); setShowExamForm(false); setMergeError(""); }}>
               {showMergeForm ? "Đóng ghép lớp" : "🔗 Ghép lớp"}
             </button>
-            <button type="button" onClick={() => { clearEditingIfActive(); setShowGroupForm((v) => !v); setShowForm(false); setShowMergeForm(false); setGroupError(""); }}>
+            <button type="button" onClick={() => { clearEditingIfActive(); clearExamEditingIfActive(); setShowGroupForm((v) => !v); setShowForm(false); setShowMergeForm(false); setShowExamForm(false); setGroupError(""); }}>
               {showGroupForm ? "Đóng tách nhóm" : "🧩 Xếp theo nhóm"}
+            </button>
+            <button type="button" onClick={() => {
+              if (editingExamId) { handleCancelExamEdit(); return; }
+              clearEditingIfActive();
+              setShowExamForm((v) => !v); setShowForm(false); setShowMergeForm(false); setShowGroupForm(false); setExamFormError("");
+            }}>
+              {editingExamId ? "Đóng form (hủy sửa lịch thi)" : showExamForm ? "Đóng form lịch thi" : "📝 Xếp lịch thi"}
             </button>
           </>
         )}
@@ -1608,6 +1750,63 @@ export default function ScheduleGrid() {
         </form>
       )}
 
+      {isAdmin && showExamForm && (
+        <form className="schedule-form" onSubmit={handleExamSubmit}>
+          <h3>{editingExamId ? "Sửa ca thi" : "📝 Xếp lịch thi mới"}</h3>
+          {editingExamId ? (
+            <div className="hint mb-2">
+              Lớp <b>{selectedExamFormClass?.ClassName}</b> — Môn <b>{subjectLabel(subjects.find((s) => String(s.SubjectId) === examForm.subjectId) || { SubjectName: "?", SubjectCode: null, MajorName: null })}</b>
+              {" "}— không đổi được Lớp/Kỳ/Môn khi sửa, chỉ chỉnh Phòng/Giám thị/Ngày/Ca/Hình thức/Ghi chú. Cần đổi Lớp hoặc Môn thì xóa ca thi này và xếp lại ca mới.
+            </div>
+          ) : (
+            <div className="form-grid">
+              <select value={examForm.classId} onChange={(e) => setExamForm({ ...examForm, classId: e.target.value, semesterId: "", subjectId: "" })} required>
+                <option value="">Lớp</option>
+                {classes.map((c) => <option key={c.ClassId} value={c.ClassId}>{c.ClassName}</option>)}
+              </select>
+              <select value={examForm.semesterId} onChange={(e) => setExamForm({ ...examForm, semesterId: e.target.value })}
+                required disabled={!examForm.classId}>
+                <option value="">{examForm.classId ? "Đợt học" : "-- Chọn lớp trước --"}</option>
+                {examFormSemesters.map((s) => <option key={s.SemesterId} value={s.SemesterId}>{s.SemesterName}</option>)}
+              </select>
+              <select value={examForm.subjectId} onChange={(e) => setExamForm({ ...examForm, subjectId: e.target.value })} required>
+                <option value="">Môn thi</option>
+                {examFormSubjects.map((s) => <option key={s.SubjectId} value={s.SubjectId}>{subjectLabel(s)}</option>)}
+              </select>
+            </div>
+          )}
+          <div className="form-grid">
+            <select value={examForm.roomId} onChange={(e) => setExamForm({ ...examForm, roomId: e.target.value })} required>
+              <option value="">Phòng thi</option>
+              {rooms.map((r) => <option key={r.RoomId} value={r.RoomId}>{r.RoomName}</option>)}
+            </select>
+            <select value={examForm.examType} onChange={(e) => setExamForm({ ...examForm, examType: e.target.value as ExamType })}>
+              {Object.entries(EXAM_TYPE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+            <div>
+              <select multiple value={examForm.proctorIds} className="w-full"
+                onChange={(e) => setExamForm({ ...examForm, proctorIds: [...e.target.selectedOptions].map((o) => o.value) })}>
+                {teachers.map((t) => <option key={t.TeacherId} value={t.TeacherId}>{t.FullName}</option>)}
+              </select>
+              <div className="hint mt-1">Cần chọn tối thiểu {policies.MinProctorsPerExam ?? 1} giám thị — giữ Ctrl (Windows)/Cmd (Mac) để chọn nhiều</div>
+            </div>
+            <input type="date" value={examForm.examDate}
+              onChange={(e) => setExamForm({ ...examForm, examDate: e.target.value })} required />
+            <select value={examForm.sessionId} onChange={(e) => setExamForm({ ...examForm, sessionId: e.target.value })} required>
+              <option value="">Ca thi</option>
+              {sessions.map((s) => (
+                <option key={s.SessionId} value={s.SessionId}>{s.SessionName} ({s.StartTime}–{s.EndTime})</option>
+              ))}
+            </select>
+            <input placeholder="Ghi chú" value={examForm.note}
+              onChange={(e) => setExamForm({ ...examForm, note: e.target.value })} />
+          </div>
+          <button type="submit">{editingExamId ? "Cập nhật ca thi" : "Thêm ca thi"}</button>
+          {editingExamId && <button type="button" onClick={handleCancelExamEdit}>Hủy sửa</button>}
+          {examFormError && <div className="error-text">{examFormError}</div>}
+        </form>
+      )}
+
       <div className="calendar-toolbar">
         <div className="calendar-nav">
           <button type="button" onClick={goPrevWeek} disabled={!currentWeek || selectedWeekIndex === 0}>‹</button>
@@ -1766,15 +1965,15 @@ export default function ScheduleGrid() {
                             {groups.map((g) => {
                               const ev = g.events[0];
                               // Việc BI: ca thi hiển thị thẻ RIÊNG (viền/nền đỏ cố định, không dùng
-                              // colorForId theo môn) — bấm vào điều hướng sang trang Lịch thi để
-                              // xem/sửa/xóa đầy đủ, không sửa trực tiếp tại đây.
+                              // colorForId theo môn). Việc CB: Admin bấm vào để Sửa NGAY tại đây;
+                              // người xem khác vẫn điều hướng sang trang Lịch thi (chỉ xem) như trước.
                               if (ev.eventType === "exam") {
                                 return (
                                   <div
                                     key={g.key}
                                     className="calendar-event-card calendar-event-card-exam"
-                                    onClick={() => navigate("/exams")}
-                                    title="Bấm để mở trang Lịch thi"
+                                    onClick={() => (isAdmin ? handleOpenExamEdit(ev.ExamId) : navigate("/exams"))}
+                                    title={isAdmin ? "Bấm để sửa ca thi" : "Bấm để mở trang Lịch thi"}
                                   >
                                     <ExamCardContent exam={ev} />
                                   </div>

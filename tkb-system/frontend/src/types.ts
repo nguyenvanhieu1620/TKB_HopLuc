@@ -272,6 +272,27 @@ export interface ExamItem {
   Proctors: string | null;
 }
 
+// Việc CB: chi tiết 1 ca thi để phục vụ form Sửa (ScheduleGrid.tsx/ExamList.tsx) — khác ExamItem
+// (dùng cho danh sách) ở chỗ có ProctorIds dạng mảng số (list() chỉ có Proctors dạng chuỗi tên gộp,
+// không đủ để tự chọn sẵn đúng giám thị trong multi-select).
+export interface ExamDetail {
+  ExamId: number;
+  SemesterId: number;
+  ClassId: number;
+  ClassName: string;
+  SubjectId: number;
+  SubjectName: string;
+  RoomId: number;
+  RoomName: string;
+  ExamDate: string;
+  StartTime: string;
+  EndTime: string;
+  ExamType: ExamType;
+  Status: ExamStatus;
+  Note: string | null;
+  ProctorIds: number[];
+}
+
 export interface BulkImportResult {
   successCount: number;
   errorCount: number;
