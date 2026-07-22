@@ -30,14 +30,16 @@ export interface AutoScheduleReport {
 
 // Cùng cách tính dịch ngày (YYYY-MM-DD) đã dùng ở scheduleController.ts/classController.ts (tính
 // bằng UTC để tránh lệch múi giờ server) — duy trì đúng quy ước hiện có, không đổi cách khác.
-function shiftDateStr(dateStr: string, offsetDays: number): string {
+// Việc CC: export để autoExamScheduler.ts tái sử dụng, tránh định nghĩa lại logic dịch ngày.
+export function shiftDateStr(dateStr: string, offsetDays: number): string {
   const [y, m, d] = dateStr.slice(0, 10).split("-").map(Number);
   const date = new Date(Date.UTC(y, m - 1, d));
   date.setUTCDate(date.getUTCDate() + offsetDays);
   return date.toISOString().slice(0, 10);
 }
 
-function addMinutesToTime(time: string, minutes: number): string {
+// Việc CC: export để autoExamScheduler.ts tái sử dụng, tránh định nghĩa lại logic cộng phút vào giờ.
+export function addMinutesToTime(time: string, minutes: number): string {
   const [h, m] = time.split(":").map(Number);
   const total = h * 60 + m + Math.round(minutes);
   const hh = Math.floor(total / 60);

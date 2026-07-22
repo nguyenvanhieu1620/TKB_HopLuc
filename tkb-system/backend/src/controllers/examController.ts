@@ -125,65 +125,85 @@ export async function getById(req: AuthRequest, res: Response, next: NextFunctio
   }
 }
 
+export interface EligibleExamRow {
+  ClassId: number;
+  ClassName: string;
+  SubjectId: number;
+  SubjectName: string;
+  TheoryDone: number;
+  TheoryTarget: number;
+  PracticeDone: number;
+  PracticeTarget: number;
+  DuDieuKienThi: boolean;
+  DaXepLichThi: boolean;
+}
+
 // LTHI-02: 1 Lớp+Môn chỉ "đủ điều kiện thi" khi đã xếp ĐỦ CẢ HAI — số tiết Lý thuyết đạt chỉ tiêu
 // VÀ số tiết Thực hành đạt chỉ tiêu (Việc AV — trước đây gộp chung 1 tổng nên báo nhầm đủ điều
 // kiện dù toàn bộ giờ đã xếp đều là Lý thuyết, chưa xếp phút Thực hành nào, hoặc ngược lại).
+// Việc CC: tách riêng thành hàm dùng chung — export để autoExamScheduler.ts tái sử dụng NGUYÊN VẸN
+// logic này (lọc theo ClassId ở phía gọi) thay vì viết lại, đúng yêu cầu "dùng nguyên logic /eligible".
+export async function getEligibleExamSubjects(semesterId: number): Promise<EligibleExamRow[]> {
+  const pool = await getPool();
+
+  const rowsResult = await pool
+    .request()
+    .input("semesterId", sql.Int, semesterId)
+    .query<{
+      ClassId: number; ClassName: string; MajorId: number; CohortId: number | null;
+      SubjectId: number; SubjectName: string; TermNumber: number | null;
+    }>(`
+      SELECT DISTINCT c.ClassId, c.ClassName, c.MajorId, c.CohortId, s.SubjectId, sub.SubjectName, sem.TermNumber
+      FROM Schedule s
+      INNER JOIN Classes c ON c.ClassId = s.ClassId
+      INNER JOIN Subjects sub ON sub.SubjectId = s.SubjectId
+      LEFT JOIN Semesters sem ON sem.SemesterId = s.SemesterId
+      WHERE s.SemesterId = @semesterId
+    `);
+
+  const result = await Promise.all(
+    rowsResult.recordset.map(async (row) => {
+      const [targets, timeline, examResult] = await Promise.all([
+        getTotalPeriodsForSubject(row.MajorId, row.SubjectId, row.CohortId, row.TermNumber),
+        getPeriodTimelineForSubject(row.ClassId, row.SubjectId),
+        pool
+          .request()
+          .input("classId", sql.Int, row.ClassId)
+          .input("subjectId", sql.Int, row.SubjectId)
+          .input("semesterId", sql.Int, semesterId)
+          .query<{ Count: number }>(
+            `SELECT COUNT(*) AS Count FROM Exams WHERE ClassId=@classId AND SubjectId=@subjectId AND SemesterId=@semesterId`
+          ),
+      ]);
+      // Việc BB: timeline nay có thể lặp lại cùng 1 giá trị lũy kế cho nhiều dòng (các nhóm tách
+      // ra từ 1 lần groupedCreate dùng chung kết quả của dòng đại diện) và dòng cuối mảng KHÔNG
+      // còn chắc là dòng có Ngày muộn nhất (1 nhóm có thể tự chọn Ngày muộn hơn dòng đại diện của
+      // chính lô đó) — lấy MAX thay vì phần tử cuối để luôn ra đúng tổng lũy kế cao nhất thực tế.
+      const theoryDone = timeline.reduce((max, t) => Math.max(max, t.cumulativeTheoryPeriods), 0);
+      const practiceDone = timeline.reduce((max, t) => Math.max(max, t.cumulativePracticePeriods), 0);
+      return {
+        ClassId: row.ClassId,
+        ClassName: row.ClassName,
+        SubjectId: row.SubjectId,
+        SubjectName: row.SubjectName,
+        TheoryDone: theoryDone,
+        TheoryTarget: targets.theoryTarget,
+        PracticeDone: practiceDone,
+        PracticeTarget: targets.practiceTarget,
+        DuDieuKienThi: theoryDone >= targets.theoryTarget && practiceDone >= targets.practiceTarget,
+        DaXepLichThi: examResult.recordset[0].Count > 0,
+      };
+    })
+  );
+
+  result.sort((a, b) => a.ClassName.localeCompare(b.ClassName) || a.SubjectName.localeCompare(b.SubjectName));
+  return result;
+}
+
 export async function eligible(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   try {
     const { semesterId } = req.query as Record<string, string | undefined>;
-    const pool = await getPool();
-
-    const rowsResult = await pool
-      .request()
-      .input("semesterId", sql.Int, semesterId)
-      .query<{
-        ClassId: number; ClassName: string; MajorId: number; CohortId: number | null;
-        SubjectId: number; SubjectName: string; TermNumber: number | null;
-      }>(`
-        SELECT DISTINCT c.ClassId, c.ClassName, c.MajorId, c.CohortId, s.SubjectId, sub.SubjectName, sem.TermNumber
-        FROM Schedule s
-        INNER JOIN Classes c ON c.ClassId = s.ClassId
-        INNER JOIN Subjects sub ON sub.SubjectId = s.SubjectId
-        LEFT JOIN Semesters sem ON sem.SemesterId = s.SemesterId
-        WHERE s.SemesterId = @semesterId
-      `);
-
-    const result = await Promise.all(
-      rowsResult.recordset.map(async (row) => {
-        const [targets, timeline, examResult] = await Promise.all([
-          getTotalPeriodsForSubject(row.MajorId, row.SubjectId, row.CohortId, row.TermNumber),
-          getPeriodTimelineForSubject(row.ClassId, row.SubjectId),
-          pool
-            .request()
-            .input("classId", sql.Int, row.ClassId)
-            .input("subjectId", sql.Int, row.SubjectId)
-            .input("semesterId", sql.Int, semesterId)
-            .query<{ Count: number }>(
-              `SELECT COUNT(*) AS Count FROM Exams WHERE ClassId=@classId AND SubjectId=@subjectId AND SemesterId=@semesterId`
-            ),
-        ]);
-        // Việc BB: timeline nay có thể lặp lại cùng 1 giá trị lũy kế cho nhiều dòng (các nhóm tách
-        // ra từ 1 lần groupedCreate dùng chung kết quả của dòng đại diện) và dòng cuối mảng KHÔNG
-        // còn chắc là dòng có Ngày muộn nhất (1 nhóm có thể tự chọn Ngày muộn hơn dòng đại diện của
-        // chính lô đó) — lấy MAX thay vì phần tử cuối để luôn ra đúng tổng lũy kế cao nhất thực tế.
-        const theoryDone = timeline.reduce((max, t) => Math.max(max, t.cumulativeTheoryPeriods), 0);
-        const practiceDone = timeline.reduce((max, t) => Math.max(max, t.cumulativePracticePeriods), 0);
-        return {
-          ClassId: row.ClassId,
-          ClassName: row.ClassName,
-          SubjectId: row.SubjectId,
-          SubjectName: row.SubjectName,
-          TheoryDone: theoryDone,
-          TheoryTarget: targets.theoryTarget,
-          PracticeDone: practiceDone,
-          PracticeTarget: targets.practiceTarget,
-          DuDieuKienThi: theoryDone >= targets.theoryTarget && practiceDone >= targets.practiceTarget,
-          DaXepLichThi: examResult.recordset[0].Count > 0,
-        };
-      })
-    );
-
-    result.sort((a, b) => a.ClassName.localeCompare(b.ClassName) || a.SubjectName.localeCompare(b.SubjectName));
+    const result = await getEligibleExamSubjects(Number(semesterId));
     res.json(result);
   } catch (err) {
     next(err);

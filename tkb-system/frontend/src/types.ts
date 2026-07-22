@@ -331,6 +331,23 @@ export interface AutoScheduleReport {
   subjectResults: AutoScheduleSubjectResult[];
 }
 
+export interface AutoExamScheduleSubjectResult {
+  subjectId: number;
+  subjectName: string;
+  isComplete: boolean;
+  examId?: number;
+  examDate?: string;
+  startTime?: string;
+  endTime?: string;
+  roomId?: number;
+  proctorIds?: number[];
+  failureReason?: string;
+}
+export interface AutoExamScheduleReport {
+  autoScheduleRunId: string;
+  subjectResults: AutoExamScheduleSubjectResult[];
+}
+
 export interface Account {
   UserId: number;
   Username: string;

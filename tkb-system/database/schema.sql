@@ -455,6 +455,9 @@ CREATE TABLE Exams (
     ExamType      NVARCHAR(20)    NOT NULL DEFAULT N'TuLuan',   -- TuLuan|TracNghiem|VanDap|ThucHanh
     Status        NVARCHAR(20)    NOT NULL DEFAULT N'ChuaThi',  -- ChuaThi|DaThi|Huy
     Note          NVARCHAR(500)   NULL,
+    -- Việc CC: đánh dấu mọi Exam do 1 lần chạy thuật toán tự động xếp Lịch thi tạo ra — dùng để xem
+    -- lại/hủy toàn bộ 1 lần chạy cụ thể, cùng nguyên tắc Schedule.AutoScheduleRunId đã có.
+    AutoScheduleRunId UNIQUEIDENTIFIER NULL,
     CreatedBy     INT             NULL,
     CreatedAt     DATETIME2       NOT NULL DEFAULT SYSDATETIME(),
     UpdatedAt     DATETIME2       NULL,

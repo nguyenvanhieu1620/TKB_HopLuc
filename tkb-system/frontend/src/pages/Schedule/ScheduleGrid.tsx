@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import axiosClient from "../../api/axiosClient";
 import { useAuth } from "../../context/AuthContext";
-import { ScheduleItem, ScheduleDetail, SchedulePeriodProgress, Semester, SchoolClass, Subject, Room, Teacher, Session, SchedulingPolicyItem, ApiErrorResponse, CopyWeekResult, CurriculumItem, Cohort, AutoScheduleReport, ExamItem, ExamDetail, ExamType } from "../../types";
+import { ScheduleItem, ScheduleDetail, SchedulePeriodProgress, Semester, SchoolClass, Subject, Room, Teacher, Session, SchedulingPolicyItem, ApiErrorResponse, CopyWeekResult, CurriculumItem, Cohort, AutoScheduleReport, ExamItem, ExamDetail, ExamType, AutoExamScheduleReport } from "../../types";
 import { AxiosError } from "axios";
 import { addDays, addMinutesToTime, colorForId, diffMinutesBetweenTimes, findTodayWeekIndex, getISOWeek, getISOWeekYear, getWeeksInSemester, mondayOfISOWeek, parseDateKey, startOfWeek, toDateKey, WEEKDAY_LABELS } from "../../../utils/calendar";
 import { buildWorkbook, downloadWorkbook } from "../../../utils/excel";
@@ -399,6 +399,12 @@ export default function ScheduleGrid() {
   const [autoScheduling, setAutoScheduling] = useState(false);
   const [autoScheduleReport, setAutoScheduleReport] = useState<AutoScheduleReport | null>(null);
   const [autoScheduleError, setAutoScheduleError] = useState("");
+
+  // Việc CC: Tự động xếp Lịch thi (1 Lớp + 1 Kỳ đang chọn ở bộ lọc trên cùng) — riêng biệt với tự
+  // động xếp TKB ở trên, chạy 1 lần cho TOÀN BỘ vùng thi của Kỳ (không theo từng Tuần).
+  const [autoExamScheduling, setAutoExamScheduling] = useState(false);
+  const [autoExamScheduleReport, setAutoExamScheduleReport] = useState<AutoExamScheduleReport | null>(null);
+  const [autoExamScheduleError, setAutoExamScheduleError] = useState("");
 
   // Việc BL: xóa toàn bộ Schedule của Lớp đang chọn trong đúng Tuần đang xem — chỉ 1 lần bấm, hữu ích
   // để dọn sạch xếp lại (đặc biệt lúc thử thuật toán tự động).
@@ -1248,6 +1254,35 @@ export default function ScheduleGrid() {
     loadSchedule();
   }
 
+  // Việc CC: Tự động xếp Lịch thi cho TOÀN BỘ vùng thi của Lớp + Kỳ đang chọn (không theo Tuần).
+  async function handleAutoScheduleExams() {
+    if (!filters.classId || !filters.semesterId) return;
+    if (!confirm("Tự động xếp lịch thi cho toàn bộ các môn đủ điều kiện chưa có lịch thi của Lớp + Kỳ đang chọn?")) return;
+    setAutoExamScheduleError("");
+    setAutoExamScheduleReport(null);
+    setAutoExamScheduling(true);
+    try {
+      const res = await axiosClient.post<AutoExamScheduleReport>("/exams/auto-generate", {
+        classId: Number(filters.classId), semesterId: Number(filters.semesterId),
+      });
+      setAutoExamScheduleReport(res.data);
+      loadSchedule();
+    } catch (err) {
+      const axiosErr = err as AxiosError<ApiErrorResponse>;
+      setAutoExamScheduleError(axiosErr.response?.data?.message || "Có lỗi xảy ra khi tự động xếp lịch thi");
+    } finally {
+      setAutoExamScheduling(false);
+    }
+  }
+
+  async function handleCancelAutoScheduleExams() {
+    if (!autoExamScheduleReport) return;
+    if (!confirm("Hủy toàn bộ lần xếp lịch thi tự động này? Mọi ca thi vừa được tạo trong lần chạy này sẽ bị xóa.")) return;
+    await axiosClient.delete(`/exams/auto-generate/${autoExamScheduleReport.autoScheduleRunId}`);
+    setAutoExamScheduleReport(null);
+    loadSchedule();
+  }
+
   // Việc BL: xóa toàn bộ Schedule (tiết học thường) của Lớp đang chọn trong đúng Tuần đang xem — CHỈ
   // Schedule, không động tới Exams (lịch thi vẫn xóa riêng qua trang Lịch thi như bình thường).
   async function handleDeleteWeek() {
@@ -1442,9 +1477,47 @@ export default function ScheduleGrid() {
             }}>
               {editingExamId ? "Đóng form (hủy sửa lịch thi)" : showExamForm ? "Đóng form lịch thi" : "📝 Xếp lịch thi"}
             </button>
+            {filters.classId && filters.semesterId && (
+              <button type="button" disabled={autoExamScheduling} onClick={handleAutoScheduleExams}>
+                {autoExamScheduling ? "Đang tự động xếp lịch thi..." : "🤖 Tự động xếp lịch thi"}
+              </button>
+            )}
           </>
         )}
       </div>
+
+      {isAdmin && autoExamScheduleError && <div className="error-text">{autoExamScheduleError}</div>}
+
+      {isAdmin && autoExamScheduleReport && (
+        <div className="inline-form items-start flex-col">
+          <p className="hint">
+            Đã xử lý {autoExamScheduleReport.subjectResults.length} môn đủ điều kiện thi chưa có lịch — xem chi tiết
+            từng môn bên dưới.
+          </p>
+          <table className="data-table">
+            <thead>
+              <tr><th>Môn học</th><th>Ca thi</th><th>Trạng thái</th></tr>
+            </thead>
+            <tbody>
+              {autoExamScheduleReport.subjectResults.map((r) => (
+                <tr key={r.subjectId} className={r.failureReason ? "row-danger" : ""}>
+                  <td>{r.subjectName}</td>
+                  <td>{r.isComplete ? `${r.examDate!.slice(0, 10).split("-").reverse().join("/")} (${r.startTime}-${r.endTime})` : "—"}</td>
+                  <td>
+                    {r.isComplete
+                      ? <span className="text-green-600 text-[13px]">✓ Đã xếp lịch thi</span>
+                      : <span className="error-text mt-0">{r.failureReason}</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="flex gap-2 mt-1">
+            <button type="button" onClick={() => setAutoExamScheduleReport(null)}>Đóng</button>
+            <button type="button" onClick={handleCancelAutoScheduleExams}>Hủy toàn bộ lần xếp này</button>
+          </div>
+        </div>
+      )}
 
       {isAdmin && showForm && (
         <form className="schedule-form" onSubmit={handleSubmit}>
