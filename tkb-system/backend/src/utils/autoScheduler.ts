@@ -814,8 +814,6 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
     // trong vài tuần đầu — không cần dàn đều, và quan trọng hơn là NHƯỜNG chỗ sớm cho Thực hành có đủ
     // trọn Kỳ để dàn đều đúng như mục tiêu Việc BZ.
     const theoryDueThisWeek = theoryQuota > 0;
-    const practiceDueThisWeek = practiceQuota > 0
-      && !shouldDeferForPacing(task.practiceDone, task.practiceRemaining, practiceQuota, practiceMaxPerSession, weekNumber, weeks.length);
 
     if (theoryDueThisWeek) {
       const prep = await prepareSubjectPart(task, "Theory", task.theoryRemaining, theoryQuota, rooms, cls.ClassSize);
@@ -832,75 +830,88 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
     // hết slot VỪA bị dời Thực hành trong CÙNG 1 tuần, không phải if/else loại trừ nhau.
     if (practiceQuota > 0 && task.theoryRemaining > 0) {
       reasons.push(`Chưa xếp Thực hành/Lâm sàng — còn thiếu ${task.theoryRemaining} tiết Lý thuyết cần học xong trước`);
-    } else if (practiceDueThisWeek) {
-      const prep = await prepareSubjectPart(task, "Practice", task.practiceRemaining, practiceQuota, rooms, cls.ClassSize);
+    } else if (practiceQuota > 0) {
+      // Việc CG (fix): TRƯỚC ĐÂY, khi shouldDeferForPacing (Việc BZ) quyết định hoãn, môn này KHÔNG hề
+      // gọi prepareSubjectPart — nghĩa là KHÔNG có `state` nào được tạo — khiến Pha 2 "dọn dẹp" (Việc
+      // CF, chạy sau vòng round-robin chính) KHÔNG THỂ tìm thấy môn này để cứu lại (chỉ xét được các
+      // môn ĐÃ CÓ state), dù môn vẫn còn nguyên nhu cầu thật. Hậu quả: nếu NHIỀU môn cùng bị hoãn 1 tuần
+      // (thường xảy ra ở nửa sau Kỳ khi phần lớn môn đã vượt tiến độ lý tưởng) và không còn môn nào khác
+      // đang hoạt động để dùng hết slot, slot đó bỏ trống vĩnh viễn dù vẫn còn môn cần xếp.
+      // SỬA: LUÔN gọi prepareSubjectPart để có `state` (bất kể có hoãn hay không) — chỉ khác là
+      // quotaThisWeek = 0 khi hoãn, khiến tryAdvanceOneBlock dừng NGAY LẬP TỨC ở Pha 1 (giữ đúng hành
+      // vi hoãn ban đầu, không xếp gì trong Pha 1) — nhưng vì `state` đã tồn tại, Pha 2 giờ THẤY được
+      // môn này và có thể "mở khóa" nó (nới quotaThisWeek = left) nếu vẫn còn slot trống sau khi mọi
+      // môn khác đã xong phần của mình — đúng tinh thần "chỉ dùng nốt chỗ thừa, không phá vỡ chỉ tiêu
+      // tuần của môn khác" (Pha 1 vẫn tôn trọng hoãn như cũ; chỉ Pha 2 mới có thể phá hoãn, và CHỈ khi
+      // thật sự còn dư chỗ).
+      const deferred = shouldDeferForPacing(task.practiceDone, task.practiceRemaining, practiceQuota, practiceMaxPerSession, weekNumber, weeks.length);
+      const prep = await prepareSubjectPart(task, "Practice", task.practiceRemaining, deferred ? 0 : practiceQuota, rooms, cls.ClassSize);
       state = prep.state ?? null;
-      if (prep.failureReason) reasons.push(prep.failureReason);
+      if (prep.failureReason) {
+        reasons.push(prep.failureReason);
+      } else if (deferred) {
+        reasons.push(`Tạm hoãn Thực hành/Lâm sàng tuần này để dàn đều tiến độ — còn ${task.practiceRemaining} tiết, sẽ dùng slot còn thừa nếu môn khác không cần tới`);
+      }
     }
 
     processing.push({ task, periodsNeeded, state, reasons });
   }
 
-  // Việc CE (fix): CÓ môn Lâm sàng/Sân bãi (isClinical) còn cần xếp tuần này hay không — nếu có, mọi
-  // môn "linh hoạt" khác (Theory/Practice không phải Lâm sàng/Sân bãi) sẽ ưu tiên thử Tối TRƯỚC Thứ
-  // 7/CN khi tìm slot (xem buildLTPrioritySlots) suốt cả tuần này, nhường Thứ 7/CN — nơi DUY NHẤT môn
-  // Lâm sàng/Sân bãi được phép dùng — cho đúng môn cần nó nhất. Tính 1 LẦN trước vòng lặp round-robin
-  // (không cập nhật lại giữa chừng dù Lâm sàng có thể xong sớm hơn trong tuần). Chỉ có ý nghĩa với hệ
-  // Liên thông (CQ không có khái niệm Tối cho Lâm sàng — không dùng field này). Việc CF (xem ngay dưới
-  // vòng round-robin chính) xử lý phần "nhường nhưng không ai dùng hết" phát sinh từ đơn giản hóa này.
+  // Việc CE: CÓ môn Lâm sàng/Sân bãi (isClinical) còn cần xếp tuần này hay không — nếu có, mọi môn
+  // "linh hoạt" khác (Theory/Practice không phải Lâm sàng/Sân bãi) sẽ ưu tiên thử Tối TRƯỚC Thứ 7/CN
+  // khi tìm slot (xem buildLTPrioritySlots) trong PHA 1 (round-robin công bằng theo chỉ tiêu tuần
+  // ngay dưới đây), nhường Thứ 7/CN — nơi DUY NHẤT môn Lâm sàng/Sân bãi được phép dùng — cho đúng môn
+  // cần nó nhất trong lượt phân bổ công bằng đầu tiên. Tính 1 LẦN trước Pha 1, không cập nhật lại giữa
+  // chừng. Chỉ có ý nghĩa với hệ Liên thông (CQ không có khái niệm Tối cho Lâm sàng).
   ctx.preferToiForFlexible = processing.some((p) => p.state && !p.state.done && p.state.isClinical);
 
-  // Việc BY: XOAY VÒNG (round-robin) qua danh sách — ĐÚNG thứ tự cấp bách đã chuẩn bị ở trên, không
-  // đổi. Mỗi lượt duyệt hết danh sách, mỗi môn còn hoạt động (state chưa done) chỉ nhận ĐÚNG 1 block
-  // rồi chuyển ngay sang môn tiếp theo — lặp lại nhiều lượt tới khi 1 lượt đầy đủ không môn nào tiến
-  // triển được nữa (hết slot hợp lệ của tuần hoặc mọi môn đã đủ chỉ tiêu tuần). Nhờ vậy nhiều môn cùng
-  // xuất hiện xen kẽ trong 1 tuần thay vì 1-2 môn dùng hết slot trước khi môn khác kịp xử lý.
-  let progressed = true;
-  while (progressed) {
-    progressed = false;
-    for (const p of processing) {
-      if (!p.state || p.state.done) continue;
-      const placed = await tryAdvanceOneBlock(ctx, p.state);
-      if (placed) progressed = true;
+  // PHA 1 (Việc BY) — XOAY VÒNG (round-robin) công bằng theo chỉ tiêu tuần: ĐÚNG thứ tự cấp bách đã
+  // chuẩn bị ở trên. Mỗi lượt duyệt hết danh sách, mỗi môn còn hoạt động (state chưa done) chỉ nhận
+  // ĐÚNG 1 block rồi chuyển ngay sang môn tiếp theo — lặp lại nhiều lượt tới khi 1 lượt đầy đủ không
+  // môn nào tiến triển được nữa. Mục đích: đảm bảo CÔNG BẰNG — không môn nào dùng hết slot của tuần
+  // trước khi môn khác (cùng đang cần) kịp có lượt, và môn Lâm sàng luôn có cơ hội dùng Thứ 7/CN
+  // trước khi các môn linh hoạt tràn vào (nhờ preferToiForFlexible ở trên). Kết thúc Pha 1: MỌI state
+  // đều done — hoặc vì đã ĐẠT quotaThisWeek (dừng công bằng, KHÔNG failureReason), hoặc vì THẬT SỰ hết
+  // slot hợp lệ (CÓ failureReason).
+  async function runRoundRobin(items: SubjectProcessing[]): Promise<void> {
+    let progressed = true;
+    while (progressed) {
+      progressed = false;
+      for (const p of items) {
+        if (!p.state || p.state.done) continue;
+        const placed = await tryAdvanceOneBlock(ctx, p.state);
+        if (placed) progressed = true;
+      }
     }
   }
+  await runRoundRobin(processing);
 
-  // Việc CF: dọn dẹp slot Thứ 7/CN còn trống sau khi vòng round-robin chính đã xử lý xong TOÀN BỘ môn
-  // isClinical của tuần này (vòng while ở trên chỉ kết thúc khi MỌI state đều done). Chẩn đoán qua
-  // script riêng (Lớp Dược K16A1, Tuần 6, Kỳ 3) phát hiện nguyên nhân: mọi môn linh hoạt dừng lại vì đã
-  // ĐẠT quotaThisWeek của chính nó (chỉ tiêu dàn đều theo tuần, Việc BK) — KHÔNG có failureReason nào cả
-  // (không phải "thật sự hết slot") — nhưng quotaThisWeek quá nhỏ (dàn đều trên còn rất nhiều tuần) nên
-  // 1 block Tối duy nhất đã vượt quota, khiến môn đó dừng NGAY mà chưa từng thử tới Thứ 7/CN — trong khi
-  // môn isClinical (cũng dừng vì đạt quota riêng của nó) chỉ dùng hết 1-2/4 slot Thứ 7/CN, để lại Thứ
-  // 7/CN (thường là Chủ nhật) trống hoàn toàn dù môn linh hoạt vẫn còn hàng chục tiết chưa xếp cho CẢ
-  // môn. SỬA: dùng phép so `scheduled < periodsNeeded` (còn thiếu CHO CẢ MÔN, không chỉ riêng tuần này)
-  // làm điều kiện retry — bao quát ĐÚNG cả 2 trường hợp (dừng vì đạt quota tuần NHƯNG còn thiếu cả môn,
-  // và dừng vì thật sự hết slot) — rồi NỚI quotaThisWeek lên bằng đúng phần còn thiếu thật (left) để
-  // không bị chặn lại bởi đúng chỉ tiêu tuần vừa khiến nó dừng, cho xoay vòng lại đúng các môn linh hoạt
-  // đó với preferToiForFlexible=false (không cần nhường nữa, vì Lâm sàng/Sân bãi đã hết khả năng dùng
-  // thêm Thứ 7/CN tuần này rồi). Slot Thứ 7/CN chỉ có vài cái/tuần nên NỚI quota không có rủi ro "front-
-  // load" — vòng dọn dẹp này bị chặn bởi chính số slot vật lý còn lại, không phải bởi quotaThisWeek nữa.
-  if (ctx.preferToiForFlexible) {
-    const retryCandidates = processing.filter(
-      (p) => p.state && p.state.done && !p.state.isClinical && p.state.scheduled < p.periodsNeeded
-    );
-    if (retryCandidates.length > 0) {
-      ctx.preferToiForFlexible = false;
-      for (const p of retryCandidates) {
-        p.state!.done = false;
-        p.state!.failureReason = undefined;
-        p.state!.quotaThisWeek = p.state!.left;
-      }
-      let retryProgressed = true;
-      while (retryProgressed) {
-        retryProgressed = false;
-        for (const p of retryCandidates) {
-          if (!p.state || p.state.done) continue;
-          const placed = await tryAdvanceOneBlock(ctx, p.state);
-          if (placed) retryProgressed = true;
-        }
-      }
+  // PHA 2 (Việc CF, tổng quát hóa) — DỌN DẸP slot còn trống sau khi Pha 1 đã cho MỌI môn cơ hội công
+  // bằng theo đúng chỉ tiêu tuần của riêng nó. Chẩn đoán toàn diện (Việc CG, script riêng chạy hết cả
+  // Kỳ cho Lớp Dược K16A1) phát hiện bản Việc CF trước đây CHỈ chạy Pha 2 khi tuần đó CÓ môn Lâm sàng/
+  // Sân bãi (gate theo ctx.preferToiForFlexible) — nghĩa là ở MỌI tuần KHÁC (đa số các tuần), Pha 2
+  // không bao giờ chạy, quay lại đúng lỗi gốc Việc BZ: chỉ tiêu tuần quá nhỏ so với 1 block tối thiểu
+  // khiến MỌI môn dừng ngay sau đúng 1 block dù còn thiếu hàng chục tiết và còn slot trống — gây CẢ 2
+  // triệu chứng cùng lúc (bỏ trống Thứ 7/CN dù còn môn cần xếp; mật độ tuần lệch nhau ngẫu nhiên tùy
+  // tuần đó có được "bù thêm" hay không, chứ không theo đúng quy luật cấp bách).
+  //
+  // SỬA TẬN GỐC: Pha 2 chạy VÔ ĐIỀU KIỆN mỗi tuần (không gate theo isClinical còn cần xếp hay không),
+  // áp dụng cho MỌI môn (kể cả Lâm sàng/Sân bãi, không chỉ môn linh hoạt) còn `scheduled < periodsNeeded`
+  // (còn thiếu CHO CẢ MÔN, không chỉ riêng tuần này — bao quát cả trường hợp dừng vì đạt quota tuần lẫn
+  // dừng vì thật sự hết slot) — nới quotaThisWeek lên đúng phần còn thiếu thật (left), tắt hẳn
+  // preferToiForFlexible (Lâm sàng/Sân bãi đã có cơ hội công bằng ở Pha 1 rồi, không cần nhường nữa —
+  // "không giữ chỗ nếu không dùng"), rồi xoay vòng lại y hệt Pha 1 cho tới khi không ai tiến thêm được.
+  // Slot mỗi tuần vốn chỉ có vài cái nên nới quota không có rủi ro dồn cục — Pha 2 bị chặn bởi chính số
+  // slot vật lý còn lại (và GV/phòng thật sự rảnh), không phải bởi quotaThisWeek nữa.
+  const cleanupCandidates = processing.filter((p) => p.state && p.state.done && p.state.scheduled < p.periodsNeeded);
+  if (cleanupCandidates.length > 0) {
+    ctx.preferToiForFlexible = false;
+    for (const p of cleanupCandidates) {
+      p.state!.done = false;
+      p.state!.failureReason = undefined;
+      p.state!.quotaThisWeek = p.state!.left;
     }
+    await runRoundRobin(cleanupCandidates);
   }
 
   const subjectResults: AutoScheduleSubjectResult[] = processing.map((p) => {
