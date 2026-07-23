@@ -11,6 +11,8 @@ router.get("/eligible", authenticate, requireRole("Admin"), ctrl.eligible);
 // tham số :id (cùng lỗi đã gặp và sửa ở scheduleRoutes.ts).
 router.post("/auto-generate", authenticate, requireRole("Admin"), autoCtrl.generate);
 router.delete("/auto-generate/:runId", authenticate, requireRole("Admin"), autoCtrl.cancel);
+// Việc CD: route literal PHẢI đặt TRƯỚC "/:id" — cùng lý do đã ghi ở trên cho "auto-generate".
+router.delete("/week", authenticate, requireRole("Admin"), ctrl.deleteWeek);
 router.get("/:id", authenticate, ctrl.getById);
 router.post("/", authenticate, requireRole("Admin"), ctrl.create);
 router.put("/:id", authenticate, requireRole("Admin"), ctrl.update);

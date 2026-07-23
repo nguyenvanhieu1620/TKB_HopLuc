@@ -409,6 +409,9 @@ export default function ScheduleGrid() {
   // Việc BL: xóa toàn bộ Schedule của Lớp đang chọn trong đúng Tuần đang xem — chỉ 1 lần bấm, hữu ích
   // để dọn sạch xếp lại (đặc biệt lúc thử thuật toán tự động).
   const [deletingWeek, setDeletingWeek] = useState(false);
+  // Việc CD: xóa toàn bộ Lịch thi (Exams) của Lớp đang chọn trong đúng Tuần đang xem — riêng biệt với
+  // deletingWeek ở trên (chỉ xóa Schedule).
+  const [deletingExamWeek, setDeletingExamWeek] = useState(false);
   // Việc BS: xóa toàn bộ Schedule của Lớp đang chọn trong CẢ Kỳ đang xem (mọi tuần) — phạm vi lớn hơn
   // nhiều so với "Xóa lịch tuần này" nên yêu cầu gõ lại tên Kỳ để xác nhận, tránh bấm nhầm.
   const [deletingSemester, setDeletingSemester] = useState(false);
@@ -955,6 +958,15 @@ export default function ScheduleGrid() {
     setExamFormError("");
   }
 
+  // Việc CD: xóa 1 ca thi lẻ ngay từ thẻ trên calendar — dùng lại đúng DELETE /exams/:id đã có sẵn
+  // (cùng API mà ExamList.tsx đang dùng), không tạo endpoint mới.
+  async function handleDeleteExam(examId: number, subjectName: string, examDate: string) {
+    if (!confirm(`Xóa ca thi môn ${subjectName} ngày ${examDate.slice(0, 10)}?`)) return;
+    await axiosClient.delete(`/exams/${examId}`);
+    if (editingExamId === examId) handleCancelExamEdit();
+    loadSchedule();
+  }
+
   // Chỉ dọn trạng thái Sửa Lịch thi (không đụng tới form nếu đang KHÔNG sửa) — dùng khi chuyển sang
   // tab khác để tránh mở nhầm form Sửa còn treo, cùng nguyên tắc clearEditingIfActive() ở trên.
   function clearExamEditingIfActive() {
@@ -1313,6 +1325,39 @@ export default function ScheduleGrid() {
       alert(axiosErr.response?.data?.message || "Có lỗi xảy ra khi xóa lịch tuần này");
     } finally {
       setDeletingWeek(false);
+    }
+  }
+
+  // Việc CD: xóa toàn bộ Lịch thi (Exams) của Lớp đang chọn trong đúng Tuần đang xem — CHỈ Exams,
+  // không động tới Schedule (tiết học thường) cùng tuần đó, ngược lại với handleDeleteWeek ở trên.
+  async function handleDeleteExamWeek() {
+    if (!filters.classId || !currentWeek) return;
+    const className = classes.find((c) => String(c.ClassId) === filters.classId)?.ClassName ?? `Lớp #${filters.classId}`;
+    const weekExamCount = examRows.filter((r) => {
+      const key = r.ExamDate.slice(0, 10);
+      return key >= toDateKey(currentWeek.start) && key <= toDateKey(currentWeek.end);
+    }).length;
+    if (weekExamCount === 0) {
+      alert(`Tuần ${currentWeek.weekNumber} của Lớp ${className} chưa có ca thi nào để xóa.`);
+      return;
+    }
+    const confirmed = confirm(
+      `Xác nhận xóa TOÀN BỘ ${weekExamCount} ca thi của Lớp ${className} trong Tuần ${currentWeek.weekNumber} ` +
+      `(${fmtDDMM(currentWeek.start)} - ${fmtDDMMYYYY(currentWeek.end)})? Hành động này không thể hoàn tác.`
+    );
+    if (!confirmed) return;
+    setDeletingExamWeek(true);
+    try {
+      const res = await axiosClient.delete<{ deletedCount: number }>("/exams/week", {
+        params: { classId: Number(filters.classId), weekStart: toDateKey(currentWeek.start) },
+      });
+      alert(`Đã xóa ${res.data.deletedCount} ca thi của Tuần ${currentWeek.weekNumber}.`);
+      loadSchedule();
+    } catch (err) {
+      const axiosErr = err as AxiosError<ApiErrorResponse>;
+      alert(axiosErr.response?.data?.message || "Có lỗi xảy ra khi xóa lịch thi tuần này");
+    } finally {
+      setDeletingExamWeek(false);
     }
   }
 
@@ -1923,6 +1968,11 @@ export default function ScheduleGrid() {
             {deletingWeek ? "Đang xóa..." : "🗑 Xóa lịch tuần này"}
           </button>
         )}
+        {isAdmin && currentWeek && (
+          <button type="button" className="btn-danger-exam" disabled={deletingExamWeek} onClick={handleDeleteExamWeek}>
+            {deletingExamWeek ? "Đang xóa..." : "🗑 Xóa lịch thi tuần này"}
+          </button>
+        )}
         {isAdmin && selectedSemester && (
           <button type="button" className="btn-danger-strong" disabled={deletingSemester} onClick={handleDeleteSemester}>
             {deletingSemester ? "Đang xóa..." : "🗑🗑 Xóa lịch cả Kỳ"}
@@ -2049,6 +2099,16 @@ export default function ScheduleGrid() {
                                     title={isAdmin ? "Bấm để sửa ca thi" : "Bấm để mở trang Lịch thi"}
                                   >
                                     <ExamCardContent exam={ev} />
+                                    {isAdmin && (
+                                      <div className="calendar-event-actions">
+                                        <button
+                                          className="calendar-event-delete"
+                                          onClick={(e) => { e.stopPropagation(); handleDeleteExam(ev.ExamId, ev.SubjectName, ev.ExamDate); }}
+                                        >
+                                          Xóa
+                                        </button>
+                                      </div>
+                                    )}
                                   </div>
                                 );
                               }

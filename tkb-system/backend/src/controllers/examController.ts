@@ -4,6 +4,7 @@ import { checkExamConflict, findHoliday } from "../utils/conflictCheck";
 import { getClassMajorTrainingMode } from "../utils/trainingModeCheck";
 import { getPolicyValue } from "../utils/policyConfig";
 import { getTotalPeriodsForSubject, getPeriodTimelineForSubject } from "../utils/policyRules";
+import { shiftDateStr } from "../utils/autoScheduler";
 import { writeAuditLog } from "../utils/auditLog";
 import { notifyTeachers } from "../utils/notify";
 import { AuthRequest } from "../types";
@@ -409,6 +410,52 @@ export async function remove(req: AuthRequest, res: Response, next: NextFunction
     }
 
     res.json({ message: "Đã xóa lịch thi" });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Việc CD: xóa TOÀN BỘ Exams (lịch thi) của 1 Lớp trong đúng 1 tuần (Thứ 2 - Chủ nhật, tính từ
+// weekStart) chỉ 1 lần bấm — mẫu theo đúng deleteWeek() của scheduleController.ts (Việc BL), nhưng
+// NGƯỢC LẠI về phạm vi bảng: CHỈ xóa Exams, KHÔNG động tới Schedule (tiết học thường) cùng tuần đó.
+// ExamProctors tự xóa theo ON DELETE CASCADE, không cần xóa tay (cùng cách cancelAutoExamScheduleRun).
+export async function deleteWeek(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { classId, weekStart } = req.query as Record<string, string | undefined>;
+    if (!classId || !weekStart) {
+      res.status(400).json({ message: "Thiếu classId hoặc weekStart" });
+      return;
+    }
+    const weekEnd = shiftDateStr(weekStart, 6);
+    const pool = await getPool();
+
+    const idsResult = await pool
+      .request()
+      .input("classId", sql.Int, classId)
+      .input("weekStart", sql.Date, weekStart)
+      .input("weekEnd", sql.Date, weekEnd)
+      .query<{ ExamId: number }>(`
+        SELECT ExamId FROM Exams WHERE ClassId = @classId AND ExamDate BETWEEN @weekStart AND @weekEnd
+      `);
+    const examIds = idsResult.recordset.map((r) => r.ExamId);
+    if (examIds.length === 0) {
+      res.json({ deletedCount: 0 });
+      return;
+    }
+
+    await pool
+      .request()
+      .input("classId", sql.Int, classId)
+      .input("weekStart", sql.Date, weekStart)
+      .input("weekEnd", sql.Date, weekEnd)
+      .query(`DELETE FROM Exams WHERE ClassId = @classId AND ExamDate BETWEEN @weekStart AND @weekEnd`);
+
+    await writeAuditLog({
+      userId: req.user!.userId, action: "Delete", tableName: "Exams",
+      recordId: null, detail: { classId: Number(classId), weekStart, weekEnd, deletedCount: examIds.length, examIds },
+    });
+
+    res.json({ deletedCount: examIds.length });
   } catch (err) {
     next(err);
   }

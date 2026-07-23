@@ -88,6 +88,11 @@
   .btn-danger-strong {
     @apply bg-red-800 text-white border-2 border-red-950 hover:bg-red-900;
   }
+  /* Việc CD: nút xóa LỊCH THI hàng loạt — màu cam để phân biệt rõ với .btn-danger (xóa tiết học
+     thường, màu đỏ), cùng tông với thẻ ca thi trên calendar (calendar-event-card-exam). */
+  .btn-danger-exam {
+    @apply bg-orange-600 text-white hover:bg-orange-700;
+  }
 
   /* ===== Calendar view (Thời khóa biểu dạng lịch theo tuần trong học kỳ) ===== */
   .calendar-toolbar { @apply flex justify-between items-center mb-3 flex-wrap gap-2.5; }
