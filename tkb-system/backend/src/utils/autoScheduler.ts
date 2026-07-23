@@ -88,6 +88,15 @@ interface RunContext {
   // dành slot Thứ 7/CN khan hiếm cho môn không có lựa chọn nào khác. Tính lại mỗi tuần (xem
   // runAutoSchedule), mặc định false khi tạo ctx.
   preferToiForFlexible: boolean;
+  // Việc CH: giới hạn TỔNG số tiết được xếp trong TUẦN NÀY, tính chung cho CẢ LỚP (không phải riêng
+  // từng môn) — bổ sung cho quotaThisWeek của TỪNG môn (Việc BK/BY), vì kích thước block luôn làm
+  // tròn LÊN (tránh buổi lẻ 1 tiết) khiến tiến độ THẬT luôn nhỉnh hơn chỉ tiêu trung bình 1 chút mỗi
+  // tuần — cộng dồn nhiều tuần thành dư hẳn cuối Kỳ (mọi môn xong sớm, các tuần cuối trống trơn dù
+  // TeachingEndDate vẫn còn). weekTotalScheduled cộng dồn ngay trong tryAdvanceOneBlock mỗi khi đặt
+  // được 1 block (bất kể môn nào, kể cả trong Pha 2 dọn dẹp) — chạm/vượt weekTotalCap thì DỪNG HẲN
+  // toàn bộ tuần, dù còn slot trống và còn môn có nhu cầu (dành phần đó cho tuần sau).
+  weekTotalCap: number;
+  weekTotalScheduled: number;
 }
 
 async function deleteScheduleRow(scheduleId: number): Promise<void> {
@@ -524,6 +533,14 @@ async function prepareSubjectPart(
 // xếp xong hẳn mới sang môn khác. Kích thước block + cơ chế co nhỏ khi hết chỗ (không giảm dưới 2 tiết
 // trừ khi bản thân block chỉ còn 1 tiết) giữ NGUYÊN VẸN như vòng lặp gốc trong processSubjectPart.
 async function tryAdvanceOneBlock(ctx: RunContext, state: SubjectPartState): Promise<boolean> {
+  // Việc CH: giới hạn tổng tuần CẤP CẢ LỚP — kiểm tra TRƯỚC cả chỉ tiêu riêng của môn, để chạm ngưỡng
+  // là dừng NGAY LẬP TỨC cho MỌI môn (không riêng môn đang xét), áp dụng đều cho cả Pha 1 lẫn Pha 2
+  // dọn dẹp (cùng gọi qua hàm này) — đúng yêu cầu "nếu tuần đã đạt giới hạn tổng thì dừng luôn cả phần
+  // dọn dẹp", không có ngoại lệ kể cả cho Lâm sàng/Sân bãi.
+  if (ctx.weekTotalScheduled >= ctx.weekTotalCap) {
+    state.done = true;
+    return false;
+  }
   if (state.scheduled >= state.quotaThisWeek || state.left <= 0) {
     state.done = true;
     return false;
@@ -547,6 +564,7 @@ async function tryAdvanceOneBlock(ctx: RunContext, state: SubjectPartState): Pro
     if (result.success) {
       state.left -= blockSize;
       state.scheduled += blockSize;
+      ctx.weekTotalScheduled += blockSize;
       state.planIndex++;
       return true;
     }
@@ -679,6 +697,15 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
     };
   }
 
+  // Việc CH: giới hạn tổng tuần CẤP CẢ LỚP — tính LẠI mỗi tuần từ số liệu THẬT còn lại đầu tuần (không
+  // tính 1 lần cho cả Kỳ), để tự thích nghi nếu tuần trước xếp thiếu do kẹt GV/phòng (tổng còn lại tăng
+  // tương đối so với số tuần còn lại, tự nới rộng giới hạn tuần sau bù lại). Làm tròn lên tới số CHẴN
+  // gần nhất (không chỉ ceil nguyên) để có thêm chút dư — tránh chặn cứng ngay khi tổng vừa nhỉnh hơn
+  // mức trung bình 1 tiết lẻ, vốn dễ xảy ra vì kích thước block luôn làm tròn lên.
+  const totalRemainingAllSubjects = subjectTasks.reduce((sum, t) => sum + t.theoryRemaining + t.practiceRemaining, 0);
+  const weekTotalCapRaw = totalRemainingAllSubjects > 0 ? Math.ceil(totalRemainingAllSubjects / weeksRemaining) : 0;
+  const weekTotalCap = weekTotalCapRaw % 2 === 0 ? weekTotalCapRaw : weekTotalCapRaw + 1;
+
   // Việc BZ: chẩn đoán qua log chi tiết nhiều tuần liên tiếp (lớp Dược K16A2) phát hiện: dù đã xoay
   // vòng (Việc BY) và có "chỉ tiêu tuần" (quotaThisWeek), 1 block LUÔN xếp trọn vẹn tối đa/buổi (4-5
   // tiết, theo computeBlockPlan) — khi còn nhiều tuần, quotaThisWeek = ceil(remaining/weeksRemaining)
@@ -754,6 +781,7 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
     notifiedTeacherIds: new Set(),
     // Việc CE (fix): tính lại ngay dưới đây, sau khi biết đủ danh sách `processing` của tuần này.
     preferToiForFlexible: false,
+    weekTotalCap, weekTotalScheduled: 0,
   };
 
   // Việc BY: chuẩn bị trạng thái xử lý cho TỪNG môn (KHÔNG đặt block nào ở bước này) theo ĐÚNG thứ tự
