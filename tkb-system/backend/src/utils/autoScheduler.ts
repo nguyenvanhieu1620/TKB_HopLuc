@@ -196,13 +196,16 @@ async function isSlotOccupied(classId: number, date: string, session: SessionRow
 
 interface DateSessionSlot { date: string; session: SessionRow; }
 
-// Việc BQ: thứ tự ưu tiên ĐẦY ĐỦ khi sinh danh sách (Ngày, Ca) khả dụng trong tuần cho Lớp kiểu Liên
-// thông — THAY THẾ HOÀN TOÀN mọi bản thứ tự ưu tiên đã gửi trước đây (Việc BN, Việc BO), dùng bản này
-// làm chuẩn CUỐI CÙNG. Từ ưu tiên cao xuống thấp:
+// Việc CD: thứ tự ưu tiên ĐẦY ĐỦ khi sinh danh sách (Ngày, Ca) khả dụng trong tuần cho Lớp kiểu Liên
+// thông — THAY THẾ HOÀN TOÀN mọi bản thứ tự ưu tiên đã gửi trước đây (Việc BN, BO, BQ), dùng bản này
+// làm chuẩn CUỐI CÙNG. Từ ưu tiên cao xuống thấp (7 mức, MỖI mức lấp đầy hết mới sang mức kế tiếp):
 //   1. Thứ 7 Sáng, Thứ 7 Chiều, Chủ nhật Sáng, Chủ nhật Chiều
-//   2. Tối Thứ 5, Tối Thứ 6 (chỉ dùng khi nhóm 1 đã hết chỗ)
-//   3. Tối Thứ 7 (chỉ dùng khi nhóm 1+2 đã hết chỗ)
-//   4. Tối Thứ 2, Tối Thứ 3, Tối Thứ 4 (phương án CUỐI CÙNG, chỉ dùng khi nhóm 1+2+3 đều đã hết chỗ)
+//   2. Tối Thứ 6
+//   3. Tối Thứ 5
+//   4. Tối Thứ 7
+//   5. Tối Thứ 4
+//   6. Tối Thứ 3
+//   7. Tối Thứ 2
 // Tối Chủ nhật KHÔNG BAO GIỜ đưa vào danh sách. Thứ 2-6 Sáng/Chiều cũng không đưa vào — chưa từng hợp
 // lệ với hệ Liên thông theo checkTrainingModeRule, đưa vào chỉ tốn vòng lặp thử vô ích.
 // weekday: 0=CN,1=T2,2=T3,3=T4,4=T5,5=T6,6=T7 (cùng quy ước getWeekday).
@@ -221,9 +224,12 @@ function buildLTPrioritySlots(dates: string[], availableSessions: SessionRow[]):
 
   return [
     ...slotsForWeekdays([6, 0], nonToiSessions), // 1. T7 Sáng/Chiều, CN Sáng/Chiều
-    ...slotsForWeekdays([4, 5], toiSessions),    // 2. Tối T5, Tối T6
-    ...slotsForWeekdays([6], toiSessions),       // 3. Tối T7
-    ...slotsForWeekdays([1, 2, 3], toiSessions), // 4. Tối T2, T3, T4
+    ...slotsForWeekdays([5], toiSessions),       // 2. Tối T6
+    ...slotsForWeekdays([4], toiSessions),       // 3. Tối T5
+    ...slotsForWeekdays([6], toiSessions),       // 4. Tối T7
+    ...slotsForWeekdays([3], toiSessions),       // 5. Tối T4
+    ...slotsForWeekdays([2], toiSessions),       // 6. Tối T3
+    ...slotsForWeekdays([1], toiSessions),       // 7. Tối T2
     // Tối CN (weekday 0, toiSessions) cố tình KHÔNG đưa vào.
   ];
 }
@@ -232,8 +238,8 @@ function buildLTPrioritySlots(dates: string[], availableSessions: SessionRow[]):
 // tự ưu tiên cần thử trước — vấn đề 1: Lâm sàng, và (Việc BV) block chỉ dùng phòng Sân bãi, KHÔNG được
 // xếp Ca Tối (loại khỏi danh sách TRƯỚC khi tính slot, độc lập/chặt hơn checkTrainingModeRule — CQ/LT
 // thường vẫn xếp Tối được nếu hợp lệ, riêng 2 trường hợp này thì không, bất kể hệ đào tạo); vấn đề 2:
-// Lớp kiểu Liên thông theo đúng 4 nhóm ưu tiên của buildLTPrioritySlots ở trên — chỉ cần đổi thứ tự
-// DANH SÁCH, tryPlaceSingleBlock vẫn duyệt tuần tự như cũ nên không cần đổi logic thử-xếp bên dưới.
+// Lớp kiểu Liên thông theo đúng 7 mức ưu tiên của buildLTPrioritySlots ở trên (Việc CD) — chỉ cần đổi
+// thứ tự DANH SÁCH, tryPlaceSingleBlock vẫn duyệt tuần tự như cũ nên không cần đổi logic thử-xếp bên dưới.
 function buildDateSessionSlots(ctx: RunContext, isClinical: boolean): DateSessionSlot[] {
   const dates: string[] = [];
   let cursor = ctx.rangeStart;
