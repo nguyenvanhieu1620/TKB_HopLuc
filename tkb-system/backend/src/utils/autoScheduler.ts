@@ -885,22 +885,11 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
     processing.push({ task, periodsNeeded, state, reasons });
   }
 
-  // Việc CE: CÓ môn Lâm sàng/Sân bãi (isClinical) còn cần xếp tuần này hay không — nếu có, mọi môn
-  // "linh hoạt" khác (Theory/Practice không phải Lâm sàng/Sân bãi) sẽ ưu tiên thử Tối TRƯỚC Thứ 7/CN
-  // khi tìm slot (xem buildLTPrioritySlots) trong PHA 1 (round-robin công bằng theo chỉ tiêu tuần
-  // ngay dưới đây), nhường Thứ 7/CN — nơi DUY NHẤT môn Lâm sàng/Sân bãi được phép dùng — cho đúng môn
-  // cần nó nhất trong lượt phân bổ công bằng đầu tiên. Tính 1 LẦN trước Pha 1, không cập nhật lại giữa
-  // chừng. Chỉ có ý nghĩa với hệ Liên thông (CQ không có khái niệm Tối cho Lâm sàng).
-  ctx.preferToiForFlexible = processing.some((p) => p.state && !p.state.done && p.state.isClinical);
-
-  // PHA 1 (Việc BY) — XOAY VÒNG (round-robin) công bằng theo chỉ tiêu tuần: ĐÚNG thứ tự cấp bách đã
-  // chuẩn bị ở trên. Mỗi lượt duyệt hết danh sách, mỗi môn còn hoạt động (state chưa done) chỉ nhận
-  // ĐÚNG 1 block rồi chuyển ngay sang môn tiếp theo — lặp lại nhiều lượt tới khi 1 lượt đầy đủ không
-  // môn nào tiến triển được nữa. Mục đích: đảm bảo CÔNG BẰNG — không môn nào dùng hết slot của tuần
-  // trước khi môn khác (cùng đang cần) kịp có lượt, và môn Lâm sàng luôn có cơ hội dùng Thứ 7/CN
-  // trước khi các môn linh hoạt tràn vào (nhờ preferToiForFlexible ở trên). Kết thúc Pha 1: MỌI state
-  // đều done — hoặc vì đã ĐẠT quotaThisWeek (dừng công bằng, KHÔNG failureReason), hoặc vì THẬT SỰ hết
-  // slot hợp lệ (CÓ failureReason).
+  // PHA 1 (Việc BY) — XOAY VÒNG (round-robin) công bằng theo chỉ tiêu tuần: mỗi lượt duyệt hết danh
+  // sách, mỗi môn còn hoạt động (state chưa done) chỉ nhận ĐÚNG 1 block rồi chuyển ngay sang môn tiếp
+  // theo — lặp lại nhiều lượt tới khi 1 lượt đầy đủ không môn nào tiến triển được nữa. Kết thúc: MỌI
+  // state đều done — hoặc vì đã ĐẠT quotaThisWeek (dừng công bằng, KHÔNG failureReason), hoặc vì THẬT
+  // SỰ hết slot hợp lệ (CÓ failureReason).
   async function runRoundRobin(items: SubjectProcessing[]): Promise<void> {
     let progressed = true;
     while (progressed) {
@@ -912,28 +901,40 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
       }
     }
   }
-  await runRoundRobin(processing);
 
-  // PHA 2 (Việc CF, tổng quát hóa) — DỌN DẸP slot còn trống sau khi Pha 1 đã cho MỌI môn cơ hội công
-  // bằng theo đúng chỉ tiêu tuần của riêng nó. Chẩn đoán toàn diện (Việc CG, script riêng chạy hết cả
-  // Kỳ cho Lớp Dược K16A1) phát hiện bản Việc CF trước đây CHỈ chạy Pha 2 khi tuần đó CÓ môn Lâm sàng/
-  // Sân bãi (gate theo ctx.preferToiForFlexible) — nghĩa là ở MỌI tuần KHÁC (đa số các tuần), Pha 2
-  // không bao giờ chạy, quay lại đúng lỗi gốc Việc BZ: chỉ tiêu tuần quá nhỏ so với 1 block tối thiểu
-  // khiến MỌI môn dừng ngay sau đúng 1 block dù còn thiếu hàng chục tiết và còn slot trống — gây CẢ 2
-  // triệu chứng cùng lúc (bỏ trống Thứ 7/CN dù còn môn cần xếp; mật độ tuần lệch nhau ngẫu nhiên tùy
-  // tuần đó có được "bù thêm" hay không, chứ không theo đúng quy luật cấp bách).
+  // Việc CI (fix): TRƯỚC ĐÂY (Việc CE), môn Lâm sàng/Sân bãi (isClinical) và các môn "linh hoạt" cùng
+  // xoay vòng CHUNG 1 vòng round-robin (1 block/lượt/môn, xen kẽ) — ctx.preferToiForFlexible chỉ khiến
+  // môn linh hoạt THỬ Tối trước, không hề NHƯỜNG lượt thật sự. Chẩn đoán qua script riêng (Lớp mirror
+  // Dược K16A1) phát hiện: với 6 môn linh hoạt + 1 môn Lâm sàng cùng hoạt động 1 tuần, MỖI môn (kể cả
+  // Lâm sàng) chỉ được đúng 1 block/lượt — mà weekTotalCap (Việc CH) lại nhỏ hơn tổng 7 block tối
+  // thiểu cộng lại, nên NGAY TRONG LƯỢT ĐẦU TIÊN, 6 môn linh hoạt đã dùng hết sạch cả Tối (đúng 6 slot)
+  // VÀ đẩy tổng tuần chạm/vượt weekTotalCap — Lâm sàng mới dùng ĐÚNG 1/4 slot Thứ 7/CN thì bị khóa
+  // luôn ở lượt 2 (weekTotalCap đã hết), dù nó còn NGUYÊN quota để dùng thêm Thứ 7/CN đang trống. Kết
+  // quả: Tối bị dùng HẾT trong khi Thứ 7/CN vẫn còn — ngược hẳn thứ tự ưu tiên đã chốt (T7/CN trước
+  // Tối) và ngược cả ý "Lâm sàng được ưu tiên TRƯỚC".
   //
-  // SỬA TẬN GỐC: Pha 2 chạy VÔ ĐIỀU KIỆN mỗi tuần (không gate theo isClinical còn cần xếp hay không),
-  // áp dụng cho MỌI môn (kể cả Lâm sàng/Sân bãi, không chỉ môn linh hoạt) còn `scheduled < periodsNeeded`
-  // (còn thiếu CHO CẢ MÔN, không chỉ riêng tuần này — bao quát cả trường hợp dừng vì đạt quota tuần lẫn
-  // dừng vì thật sự hết slot) — nới quotaThisWeek lên đúng phần còn thiếu thật (left), tắt hẳn
-  // preferToiForFlexible (Lâm sàng/Sân bãi đã có cơ hội công bằng ở Pha 1 rồi, không cần nhường nữa —
-  // "không giữ chỗ nếu không dùng"), rồi xoay vòng lại y hệt Pha 1 cho tới khi không ai tiến thêm được.
-  // Slot mỗi tuần vốn chỉ có vài cái nên nới quota không có rủi ro dồn cục — Pha 2 bị chặn bởi chính số
-  // slot vật lý còn lại (và GV/phòng thật sự rảnh), không phải bởi quotaThisWeek nữa.
+  // SỬA TẬN GỐC: không xoay vòng CHUNG 1 vòng nữa — tách riêng 2 nhóm, xử lý TUẦN TỰ theo đúng nghĩa
+  // "ưu tiên trước": môn Lâm sàng/Sân bãi (isClinical) round-robin NỘI BỘ (công bằng với NHAU nếu có
+  // nhiều môn Lâm sàng) tới khi xong HẲN phần của mình TRƯỚC (dùng hết quota riêng hoặc hết slot Thứ
+  // 7/CN thật) — CHỈ SAU ĐÓ môn "linh hoạt" mới bắt đầu vòng round-robin của riêng chúng, tranh phần
+  // weekTotalCap CÒN LẠI. Nhờ vậy Thứ 7/CN không còn bị "đặt cược" hụt cho Lâm sàng nữa — nó được dùng
+  // THẬT trước khi môn linh hoạt kịp động vào ngân sách chung. Vì Lâm sàng luôn giải quyết xong TRƯỚC
+  // khi môn linh hoạt có lượt đầu tiên, môn linh hoạt không còn gì cần "nhường" nữa — preferToiForFlexible
+  // (Việc CE) không còn cần thiết, luôn để false, môn linh hoạt dùng đúng thứ tự CHUẨN (Thứ 7/CN trước
+  // Tối) như mọi lớp Liên thông khác.
+  ctx.preferToiForFlexible = false;
+  const clinicalParts = processing.filter((p) => p.state?.isClinical);
+  const flexibleParts = processing.filter((p) => p.state && !p.state.isClinical);
+  await runRoundRobin(clinicalParts);
+  await runRoundRobin(flexibleParts);
+
+  // PHA 2 (Việc CF/CG, tổng quát hóa) — DỌN DẸP slot còn trống sau khi Pha 1 đã cho MỌI môn cơ hội
+  // công bằng theo đúng chỉ tiêu tuần của riêng nó (Lâm sàng/Sân bãi trước, linh hoạt sau). Áp dụng
+  // cho MỌI môn (kể cả Lâm sàng/Sân bãi) còn `scheduled < periodsNeeded` (còn thiếu CHO CẢ MÔN, không
+  // chỉ riêng tuần này) — nới quotaThisWeek lên đúng phần còn thiếu thật (left) rồi xoay vòng lại tới
+  // khi không ai tiến thêm được, dùng nốt phần weekTotalCap/slot vật lý còn dư mà Pha 1 chưa cần tới.
   const cleanupCandidates = processing.filter((p) => p.state && p.state.done && p.state.scheduled < p.periodsNeeded);
   if (cleanupCandidates.length > 0) {
-    ctx.preferToiForFlexible = false;
     for (const p of cleanupCandidates) {
       p.state!.done = false;
       p.state!.failureReason = undefined;
