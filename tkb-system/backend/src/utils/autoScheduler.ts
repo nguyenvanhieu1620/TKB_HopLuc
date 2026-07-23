@@ -82,6 +82,12 @@ interface RunContext {
   autoScheduleRunId: string;
   userId: number;
   notifiedTeacherIds: Set<number>;
+  // Việc CE (fix): true khi tuần đang xử lý có ít nhất 1 môn Lâm sàng/Sân bãi (isClinical — CHỈ được
+  // phép dùng Thứ 7/CN, không bao giờ Tối) còn cần xếp — lúc đó các môn "linh hoạt" (Lý thuyết/Thực
+  // hành thường, được phép dùng CẢ Thứ 7/CN LẪN Tối) phải NHƯỜNG Thứ 7/CN, ưu tiên thử Tối trước, để
+  // dành slot Thứ 7/CN khan hiếm cho môn không có lựa chọn nào khác. Tính lại mỗi tuần (xem
+  // runAutoSchedule), mặc định false khi tạo ctx.
+  preferToiForFlexible: boolean;
 }
 
 async function deleteScheduleRow(scheduleId: number): Promise<void> {
@@ -209,7 +215,17 @@ interface DateSessionSlot { date: string; session: SessionRow; }
 // Tối Chủ nhật KHÔNG BAO GIỜ đưa vào danh sách. Thứ 2-6 Sáng/Chiều cũng không đưa vào — chưa từng hợp
 // lệ với hệ Liên thông theo checkTrainingModeRule, đưa vào chỉ tốn vòng lặp thử vô ích.
 // weekday: 0=CN,1=T2,2=T3,3=T4,4=T5,5=T6,6=T7 (cùng quy ước getWeekday).
-function buildLTPrioritySlots(dates: string[], availableSessions: SessionRow[]): DateSessionSlot[] {
+//
+// Việc CE (fix): chẩn đoán qua script riêng (Lớp Dược K16A1, Kỳ 3) phát hiện Thứ 7/CN của LỚP LIÊN
+// THÔNG bị bão hòa 100% suốt cả Kỳ trong khi Tối T2-T7 bị bỏ trống rất nhiều (53/99 slot trống) — môn
+// Lâm sàng/Sân bãi (isClinical, CHỈ được phép Thứ 7/CN, không bao giờ Tối) bị các môn "linh hoạt" (Lý
+// thuyết/Thực hành thường, được phép CẢ Thứ 7/CN LẪN Tối) chiếm mất slot Thứ 7/CN trước do luôn thử
+// mức 1 (Thứ 7/CN) trước Tối, dù bản thân các môn linh hoạt đó vẫn xếp được vào Tối đang dư dả. Tham
+// số preferToiFirst (true khi tuần đang chạy CÒN môn isClinical cần xếp — xem ctx.preferToiForFlexible)
+// đảo ngược thứ tự CHỈ cho môn linh hoạt: thử hết 6 mức Tối trước, dồn mức Thứ 7/CN xuống cuối cùng,
+// nhường slot khan hiếm đó cho môn không có lựa chọn nào khác. Môn isClinical không bị ảnh hưởng
+// (tham số này luôn false khi gọi cho isClinical — xem buildDateSessionSlots).
+function buildLTPrioritySlots(dates: string[], availableSessions: SessionRow[], preferToiFirst: boolean): DateSessionSlot[] {
   const datesByWeekday = new Map<number, string[]>();
   for (const date of dates) {
     const wd = getWeekday(date);
@@ -222,24 +238,28 @@ function buildLTPrioritySlots(dates: string[], availableSessions: SessionRow[]):
   const slotsForWeekdays = (weekdays: number[], sessions: SessionRow[]): DateSessionSlot[] =>
     weekdays.flatMap((wd) => (datesByWeekday.get(wd) || []).flatMap((date) => sessions.map((session) => ({ date, session }))));
 
-  return [
-    ...slotsForWeekdays([6, 0], nonToiSessions), // 1. T7 Sáng/Chiều, CN Sáng/Chiều
-    ...slotsForWeekdays([5], toiSessions),       // 2. Tối T6
-    ...slotsForWeekdays([4], toiSessions),       // 3. Tối T5
-    ...slotsForWeekdays([6], toiSessions),       // 4. Tối T7
-    ...slotsForWeekdays([3], toiSessions),       // 5. Tối T4
-    ...slotsForWeekdays([2], toiSessions),       // 6. Tối T3
-    ...slotsForWeekdays([1], toiSessions),       // 7. Tối T2
+  const weekendTier = slotsForWeekdays([6, 0], nonToiSessions); // T7 Sáng/Chiều, CN Sáng/Chiều
+  const eveningTiers = [
+    ...slotsForWeekdays([5], toiSessions), // Tối T6
+    ...slotsForWeekdays([4], toiSessions), // Tối T5
+    ...slotsForWeekdays([6], toiSessions), // Tối T7
+    ...slotsForWeekdays([3], toiSessions), // Tối T4
+    ...slotsForWeekdays([2], toiSessions), // Tối T3
+    ...slotsForWeekdays([1], toiSessions), // Tối T2
     // Tối CN (weekday 0, toiSessions) cố tình KHÔNG đưa vào.
   ];
+
+  return preferToiFirst ? [...eveningTiers, ...weekendTier] : [...weekendTier, ...eveningTiers];
 }
 
 // Việc BN/BO/BV: sinh danh sách (Ngày, Ca) khả dụng trong khung [rangeStart, rangeEnd] theo ĐÚNG thứ
 // tự ưu tiên cần thử trước — vấn đề 1: Lâm sàng, và (Việc BV) block chỉ dùng phòng Sân bãi, KHÔNG được
 // xếp Ca Tối (loại khỏi danh sách TRƯỚC khi tính slot, độc lập/chặt hơn checkTrainingModeRule — CQ/LT
 // thường vẫn xếp Tối được nếu hợp lệ, riêng 2 trường hợp này thì không, bất kể hệ đào tạo); vấn đề 2:
-// Lớp kiểu Liên thông theo đúng 7 mức ưu tiên của buildLTPrioritySlots ở trên (Việc CD) — chỉ cần đổi
-// thứ tự DANH SÁCH, tryPlaceSingleBlock vẫn duyệt tuần tự như cũ nên không cần đổi logic thử-xếp bên dưới.
+// Lớp kiểu Liên thông theo đúng 7 mức ưu tiên của buildLTPrioritySlots ở trên (Việc CD), ĐẢO NGƯỢC khi
+// isClinical=false VÀ ctx.preferToiForFlexible=true (Việc CE fix, xem giải thích ở buildLTPrioritySlots)
+// — chỉ cần đổi thứ tự DANH SÁCH, tryPlaceSingleBlock vẫn duyệt tuần tự như cũ nên không cần đổi logic
+// thử-xếp bên dưới.
 function buildDateSessionSlots(ctx: RunContext, isClinical: boolean): DateSessionSlot[] {
   const dates: string[] = [];
   let cursor = ctx.rangeStart;
@@ -253,7 +273,7 @@ function buildDateSessionSlots(ctx: RunContext, isClinical: boolean): DateSessio
     : ctx.sessions;
 
   if (ctx.trainingMode === "LT") {
-    return buildLTPrioritySlots(dates, availableSessions);
+    return buildLTPrioritySlots(dates, availableSessions, !isClinical && ctx.preferToiForFlexible);
   }
   return dates.flatMap((date) => availableSessions.map((session) => ({ date, session })));
 }
@@ -732,6 +752,8 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
     autoScheduleRunId,
     userId,
     notifiedTeacherIds: new Set(),
+    // Việc CE (fix): tính lại ngay dưới đây, sau khi biết đủ danh sách `processing` của tuần này.
+    preferToiForFlexible: false,
   };
 
   // Việc BY: chuẩn bị trạng thái xử lý cho TỪNG môn (KHÔNG đặt block nào ở bước này) theo ĐÚNG thứ tự
@@ -818,6 +840,16 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
 
     processing.push({ task, periodsNeeded, state, reasons });
   }
+
+  // Việc CE (fix): CÓ môn Lâm sàng/Sân bãi (isClinical) còn cần xếp tuần này hay không — nếu có, mọi
+  // môn "linh hoạt" khác (Theory/Practice không phải Lâm sàng/Sân bãi) sẽ ưu tiên thử Tối TRƯỚC Thứ
+  // 7/CN khi tìm slot (xem buildLTPrioritySlots) suốt cả tuần này, nhường Thứ 7/CN — nơi DUY NHẤT môn
+  // Lâm sàng/Sân bãi được phép dùng — cho đúng môn cần nó nhất. Tính 1 LẦN trước vòng lặp round-robin
+  // (không cập nhật lại giữa chừng dù Lâm sàng có thể xong sớm hơn — đơn giản hóa có chủ đích, không
+  // gây hại: môn linh hoạt vẫn xếp được vào Thứ 7/CN bình thường nếu Tối đã hết chỗ, chỉ đổi THỨ TỰ
+  // ưu tiên thử, không mất slot nào). Chỉ có ý nghĩa với hệ Liên thông (CQ không có khái niệm Tối cho
+  // Lâm sàng — không dùng field này).
+  ctx.preferToiForFlexible = processing.some((p) => p.state && !p.state.done && p.state.isClinical);
 
   // Việc BY: XOAY VÒNG (round-robin) qua danh sách — ĐÚNG thứ tự cấp bách đã chuẩn bị ở trên, không
   // đổi. Mỗi lượt duyệt hết danh sách, mỗi môn còn hoạt động (state chưa done) chỉ nhận ĐÚNG 1 block
