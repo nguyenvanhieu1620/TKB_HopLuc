@@ -28,6 +28,27 @@ export interface AutoScheduleReport {
   subjectResults: AutoScheduleSubjectResult[];
 }
 
+// Việc CO: thống kê nhanh riêng cho MỖI tuần trong lần chạy "Tự động xếp CẢ KỲ" — totalPeriodsScheduled
+// ở đây là số tiết mới xếp THÊM trong đúng tuần đó (khớp AutoScheduleReport.totalPeriodsScheduled của
+// runAutoSchedule cho tuần đó), không phải lũy kế.
+export interface FullTermWeekStat {
+  weekNumber: number;
+  totalPeriodsScheduled: number;
+  autoScheduleRunId: string;
+}
+
+// Việc CO: báo cáo TỔNG HỢP cho cả lần chạy "Tự động xếp CẢ KỲ" (vòng lặp chính qua hết các tuần +
+// bước cứu vãn Việc CN) — subjectResults/totalPeriodsNeeded/totalPeriodsScheduled ở đây là số liệu
+// CUỐI CÙNG (sau khi mọi thứ đã chạy xong), không phải theo từng tuần riêng lẻ như AutoScheduleReport.
+export interface FullTermAutoScheduleReport {
+  autoScheduleRunIds: string[];
+  totalPeriodsNeeded: number;
+  totalPeriodsScheduled: number;
+  subjectResults: AutoScheduleSubjectResult[];
+  weeklyStats: FullTermWeekStat[];
+  rescuePeriodsScheduled: number;
+}
+
 // Cùng cách tính dịch ngày (YYYY-MM-DD) đã dùng ở scheduleController.ts/classController.ts (tính
 // bằng UTC để tránh lệch múi giờ server) — duy trì đúng quy ước hiện có, không đổi cách khác.
 // Việc CC: export để autoExamScheduler.ts tái sử dụng, tránh định nghĩa lại logic dịch ngày.
@@ -1056,4 +1077,294 @@ export async function cancelAutoScheduleRun(runId: string, userId: number): Prom
     recordId: null, detail: { autoScheduleRunId: runId, deletedCount: scheduleIds.length, scheduleIds },
   });
   return scheduleIds.length;
+}
+
+interface RescuePassResult {
+  autoScheduleRunId: string;
+  totalPeriodsNeeded: number;
+  totalPeriodsScheduled: number;
+  subjectResults: AutoScheduleSubjectResult[];
+  rescuePeriodsScheduled: number;
+}
+
+// Việc CN: BƯỚC CỨU VÃN CUỐI CÙNG — chạy ĐÚNG 1 LẦN, sau khi vòng lặp chính (runAutoSchedule, GIỮ
+// NGUYÊN không đổi gì) đã xử lý xong TOÀN BỘ các tuần của Kỳ (xem runAutoScheduleFullTerm bên dưới).
+// Mục tiêu: 1 môn CHỈ được coi là thật sự thiếu tiết khi không còn slot nào khả dụng trong CẢ KỲ —
+// không phải chỉ vì bị chặn bởi weekTotalCap (Việc CH) hoặc chỉ tiêu tuần riêng của môn (Việc BK/BY,
+// quotaThisWeek) ở 1 tuần cụ thể, trong khi tuần khác cùng Kỳ vẫn còn slot trống thật.
+//
+// Cách làm: với MỖI môn còn thiếu (Lý thuyết trước, rồi Thực hành/Lâm sàng nếu Lý thuyết đã xong —
+// giữ NGUYÊN ràng buộc sư phạm "Lý thuyết trước Thực hành"), dựng lại state qua ĐÚNG prepareSubjectPart
+// + computeBlockPlan đã có (không viết lại), nhưng với quotaThisWeek = TOÀN BỘ phần còn thiếu (không
+// còn khái niệm "chỉ tiêu tuần" nữa), rồi gọi tryAdvanceOneBlock (cũng giữ NGUYÊN) lặp lại tới khi
+// done — vì ctx.weekTotalCap ở đây = Infinity (không giới hạn) và ctx.rangeStart/rangeEnd trải dài
+// CẢ KỲ (không phải 1 tuần), buildDateSessionSlots sẽ tự sinh danh sách (Ngày, Ca) của TOÀN BỘ Kỳ theo
+// ĐÚNG thứ tự ưu tiên hiện có (không có Tối Chủ nhật/Tối Thứ 7, Việc CD/CL) — không cần đổi bất kỳ hàm
+// dùng chung nào. Mọi ràng buộc CỨNG (conflict, capacity, sessionLength, dailyHoursLimit,
+// trainingModeRule, teacher weekly/yearly hours, holiday) vẫn áp dụng ĐẦY ĐỦ bên trong
+// tryPlaceSingleBlock/tryPlaceGroupSplitBlock như bình thường — chỉ có 2 giới hạn MỀM (weekTotalCap,
+// quotaThisWeek theo tuần) là được bỏ, đúng yêu cầu.
+async function runFullTermRescuePass(
+  classId: number, semesterId: number, userId: number, semesterStart: string, teachingEnd: string
+): Promise<RescuePassResult> {
+  const pool = await getPool();
+
+  const classResult = await pool
+    .request()
+    .input("classId", sql.Int, classId)
+    .query<{ MajorId: number; CohortId: number | null; ClassSize: number }>(
+      `SELECT MajorId, CohortId, ClassSize FROM Classes WHERE ClassId = @classId`
+    );
+  const cls = classResult.recordset[0];
+  if (!cls) {
+    const err: HttpError = new Error("Không tìm thấy lớp");
+    err.status = 404;
+    throw err;
+  }
+  const termResult = await pool.request().input("semesterId", sql.Int, semesterId).query<{ TermNumber: number | null }>(
+    `SELECT TermNumber FROM Semesters WHERE SemesterId = @semesterId`
+  );
+  const termNumber = termResult.recordset[0]?.TermNumber ?? null;
+
+  const classInfo = await getClassTrainingMode(classId);
+  const majorClassInfo = await getClassMajorTrainingMode(classId);
+
+  const sessionsResult = await pool.request().query<SessionRow>(`
+    SELECT SessionId, CONVERT(VARCHAR(5), StartTime, 108) AS StartTime, CONVERT(VARCHAR(5), EndTime, 108) AS EndTime, SortOrder
+    FROM Sessions WHERE IsActive = 1 ORDER BY SortOrder
+  `);
+  const roomsResult = await pool.request().query<RoomRow>(`SELECT RoomId, RoomType FROM Rooms WHERE IsActive = 1`);
+  const rooms = roomsResult.recordset;
+
+  const curriculumResult = await pool
+    .request()
+    .input("majorId", sql.Int, cls.MajorId)
+    .input("termNumber", sql.Int, termNumber)
+    .input("cohortId", sql.Int, cls.CohortId)
+    .query<{ SubjectId: number; SubjectName: string; PracticeMode: string; Category: string | null }>(`
+      WITH ranked AS (
+        SELECT ci.SubjectId, ci.PracticeMode,
+               ROW_NUMBER() OVER (PARTITION BY ci.SubjectId ORDER BY CASE WHEN ci.CohortId = @cohortId THEN 0 ELSE 1 END) AS rn
+        FROM CurriculumItems ci
+        WHERE ci.MajorId = @majorId AND ci.TermNumber = @termNumber AND ci.IsActive = 1
+          AND (ci.CohortId = @cohortId OR ci.CohortId IS NULL)
+      )
+      SELECT r.SubjectId, sub.SubjectName, r.PracticeMode, sub.Category
+      FROM ranked r
+      INNER JOIN Subjects sub ON sub.SubjectId = r.SubjectId
+      WHERE r.rn = 1 AND sub.IsActive = 1
+      ORDER BY sub.SubjectName
+    `);
+
+  const subjectTasks: SubjectTask[] = await Promise.all(
+    curriculumResult.recordset.map(async (row) => {
+      const [targets, timeline, teacherResult] = await Promise.all([
+        getTotalPeriodsForSubject(cls.MajorId, row.SubjectId, cls.CohortId, termNumber),
+        getPeriodTimelineForSubject(classId, row.SubjectId),
+        pool.request().input("subjectId", sql.Int, row.SubjectId).query<{ TeacherId: number }>(`
+          SELECT ts.TeacherId FROM TeacherSubjects ts
+          INNER JOIN Teachers t ON t.TeacherId = ts.TeacherId
+          WHERE ts.SubjectId = @subjectId AND t.IsActive = 1
+        `),
+      ]);
+      const lastEntry = timeline[timeline.length - 1];
+      const theoryDone = lastEntry?.cumulativeTheoryPeriods ?? 0;
+      const practiceDone = lastEntry?.cumulativePracticePeriods ?? 0;
+      return {
+        subjectId: row.SubjectId, subjectName: row.SubjectName, practiceMode: row.PracticeMode, category: row.Category,
+        theoryRemaining: Math.max(0, targets.theoryTarget - theoryDone),
+        practiceRemaining: Math.max(0, targets.practiceTarget - practiceDone),
+        theoryDone, practiceDone,
+        teacherIds: teacherResult.recordset.map((t) => t.TeacherId),
+      };
+    })
+  );
+
+  // Không còn khái niệm "weeksRemaining"/chỉ tiêu tuần ở bước cứu vãn — sắp xếp môn xử lý trước theo
+  // tổng số tiết còn thiếu GIẢM DẦN (môn thiếu nhiều nhất xử lý trước), Category chỉ để phá thế hòa.
+  const CATEGORY_ORDER: Record<string, number> = { DaiCuong: 0, CoSoNganh: 1, ChuyenNganh: 2 };
+  subjectTasks.sort((a, b) => {
+    const remA = a.theoryRemaining + a.practiceRemaining;
+    const remB = b.theoryRemaining + b.practiceRemaining;
+    if (remB !== remA) return remB - remA;
+    const catDiff = (CATEGORY_ORDER[a.category ?? ""] ?? 99) - (CATEGORY_ORDER[b.category ?? ""] ?? 99);
+    if (catDiff !== 0) return catDiff;
+    return a.subjectId - b.subjectId;
+  });
+
+  const autoScheduleRunId = randomUUID();
+  const ctx: RunContext = {
+    classId, semesterId,
+    trainingMode: classInfo?.trainingMode ?? null,
+    majorTrainingMode: majorClassInfo?.trainingMode ?? null,
+    rangeStart: semesterStart,
+    rangeEnd: teachingEnd,
+    sessions: sessionsResult.recordset,
+    teacherLoadTally: new Map(),
+    autoScheduleRunId,
+    userId,
+    notifiedTeacherIds: new Set(),
+    preferToiForFlexible: false,
+    weekTotalCap: Infinity,
+    weekTotalScheduled: 0,
+  };
+
+  interface RescueSubjectProcessing {
+    task: SubjectTask;
+    theoryState: SubjectPartState | null;
+    practiceState: SubjectPartState | null;
+    reasons: string[];
+  }
+
+  const processing: RescueSubjectProcessing[] = [];
+  for (const task of subjectTasks) {
+    if (task.theoryRemaining + task.practiceRemaining === 0) {
+      processing.push({ task, theoryState: null, practiceState: null, reasons: [] });
+      continue;
+    }
+    if (task.teacherIds.length === 0) {
+      processing.push({ task, theoryState: null, practiceState: null, reasons: ["Không có giảng viên nào dạy được môn này"] });
+      continue;
+    }
+
+    const reasons: string[] = [];
+    let theoryState: SubjectPartState | null = null;
+    if (task.theoryRemaining > 0) {
+      const prep = await prepareSubjectPart(task, "Theory", task.theoryRemaining, task.theoryRemaining, rooms, cls.ClassSize);
+      theoryState = prep.state ?? null;
+      if (prep.failureReason) reasons.push(prep.failureReason);
+      if (theoryState) {
+        while (!theoryState.done) await tryAdvanceOneBlock(ctx, theoryState);
+        if (theoryState.failureReason) reasons.push(theoryState.failureReason.replace("trong Tuần này", "trong CẢ KỲ"));
+      }
+    }
+
+    // Việc BM (vấn đề 1), giữ nguyên ràng buộc: chỉ xét Thực hành/Lâm sàng khi Lý thuyết CẢ KỲ đã xong
+    // — dùng trạng thái SAU KHI bước cứu vãn vừa xử lý xong phần Lý thuyết ở trên (theoryState.left nếu
+    // có state, else giá trị gốc task.theoryRemaining nếu không cần xử lý gì — cả 2 trường hợp đều đã
+    // phản ánh đúng phần Lý thuyết còn thiếu SAU rescue).
+    const theoryStillRemaining = theoryState ? theoryState.left : task.theoryRemaining;
+    let practiceState: SubjectPartState | null = null;
+    if (task.practiceRemaining > 0) {
+      if (theoryStillRemaining > 0) {
+        reasons.push(`Chưa xếp Thực hành/Lâm sàng — còn thiếu ${theoryStillRemaining} tiết Lý thuyết cần học xong trước`);
+      } else {
+        const prep = await prepareSubjectPart(task, "Practice", task.practiceRemaining, task.practiceRemaining, rooms, cls.ClassSize);
+        practiceState = prep.state ?? null;
+        if (prep.failureReason) reasons.push(prep.failureReason);
+      }
+    }
+
+    processing.push({ task, theoryState, practiceState, reasons });
+  }
+
+  // Lâm sàng/Sân bãi trước, môn linh hoạt sau — cùng thứ tự ưu tiên đã chốt cho vòng lặp chính (Việc
+  // CI) — chỉ áp dụng cho Practice (Theory không bao giờ isClinical). Xử lý TUẦN TỰ TỚI KHI XONG HẲN
+  // từng môn một (không cần round-robin công bằng theo tuần nữa vì không còn weekTotalCap để tranh).
+  const clinicalPractice = processing.filter((p) => p.practiceState?.isClinical);
+  const flexiblePractice = processing.filter((p) => p.practiceState && !p.practiceState.isClinical);
+  for (const p of clinicalPractice) {
+    while (p.practiceState && !p.practiceState.done) await tryAdvanceOneBlock(ctx, p.practiceState);
+  }
+  for (const p of flexiblePractice) {
+    while (p.practiceState && !p.practiceState.done) await tryAdvanceOneBlock(ctx, p.practiceState);
+  }
+  for (const p of processing) {
+    if (p.practiceState?.failureReason) p.reasons.push(p.practiceState.failureReason.replace("trong Tuần này", "trong CẢ KỲ"));
+  }
+
+  const rescuePeriodsScheduled = processing.reduce(
+    (sum, p) => sum + (p.theoryState?.scheduled ?? 0) + (p.practiceState?.scheduled ?? 0), 0
+  );
+
+  // Truy vấn lại TRẠNG THÁI CUỐI CÙNG thật (sau khi CẢ vòng lặp chính LẪN bước cứu vãn đã xong) làm
+  // báo cáo cuối — không dùng số liệu "còn thiếu trước bước cứu vãn" vì đó chỉ là 1 lát cắt tạm thời,
+  // không phản ánh đúng tổng toàn Kỳ.
+  const finalSubjectResults: AutoScheduleSubjectResult[] = await Promise.all(
+    processing.map(async (p) => {
+      const [targets, timeline] = await Promise.all([
+        getTotalPeriodsForSubject(cls.MajorId, p.task.subjectId, cls.CohortId, termNumber),
+        getPeriodTimelineForSubject(classId, p.task.subjectId),
+      ]);
+      const lastEntry = timeline[timeline.length - 1];
+      const theoryDone = lastEntry?.cumulativeTheoryPeriods ?? 0;
+      const practiceDone = lastEntry?.cumulativePracticePeriods ?? 0;
+      const periodsNeeded = targets.theoryTarget + targets.practiceTarget;
+      const periodsScheduled = theoryDone + practiceDone;
+      const isComplete = periodsScheduled >= periodsNeeded;
+      return {
+        subjectId: p.task.subjectId, subjectName: p.task.subjectName,
+        periodsNeeded, periodsScheduled, isComplete,
+        failureReason: isComplete ? undefined : (p.reasons.join(" | ") || undefined),
+      };
+    })
+  );
+
+  const totalPeriodsNeeded = finalSubjectResults.reduce((sum, r) => sum + r.periodsNeeded, 0);
+  const totalPeriodsScheduled = finalSubjectResults.reduce((sum, r) => sum + r.periodsScheduled, 0);
+
+  await writeAuditLog({
+    userId, action: "Insert", tableName: "Schedule",
+    recordId: null,
+    detail: { classId, semesterId, autoScheduleRunId, rescuePeriodsScheduled, totalPeriodsNeeded, totalPeriodsScheduled, subjectResults: finalSubjectResults },
+  });
+
+  if (rescuePeriodsScheduled > 0 && ctx.notifiedTeacherIds.size > 0) {
+    const classNameResult = await pool.request().input("classId", sql.Int, classId).query<{ ClassName: string }>(
+      `SELECT ClassName FROM Classes WHERE ClassId = @classId`
+    );
+    const className = classNameResult.recordset[0]?.ClassName ?? `Lớp #${classId}`;
+    await notifyTeachers(
+      Array.from(ctx.notifiedTeacherIds),
+      `TKB lớp ${className} vừa được tự động xếp bổ sung ${rescuePeriodsScheduled} tiết (bước cứu vãn cuối Kỳ)`,
+      "Schedule",
+      null
+    );
+  }
+
+  return { autoScheduleRunId, totalPeriodsNeeded, totalPeriodsScheduled, subjectResults: finalSubjectResults, rescuePeriodsScheduled };
+}
+
+// Việc CO: chạy thuật toán CHÍNH (runAutoSchedule ở trên, GIỮ NGUYÊN không đổi gì) tuần tự qua HẾT
+// các tuần của Kỳ — y hệt như nếu người dùng tự bấm nút "Tự động xếp lịch tuần này" lần lượt từng tuần
+// — sau đó TỰ ĐỘNG chạy bước "cứu vãn cuối cùng" (Việc CN, runFullTermRescuePass) đúng 1 lần.
+export async function runAutoScheduleFullTerm(classId: number, semesterId: number, userId: number): Promise<FullTermAutoScheduleReport> {
+  const pool = await getPool();
+  const semesterResult = await pool
+    .request()
+    .input("semesterId", sql.Int, semesterId)
+    .input("classId", sql.Int, classId)
+    .query<{ StartDate: string; EndDate: string; TeachingEndDate: string | null }>(`
+      SELECT CONVERT(VARCHAR(10), StartDate, 23) AS StartDate, CONVERT(VARCHAR(10), EndDate, 23) AS EndDate,
+             CONVERT(VARCHAR(10), TeachingEndDate, 23) AS TeachingEndDate
+      FROM Semesters WHERE SemesterId = @semesterId AND ClassId = @classId
+    `);
+  const semester = semesterResult.recordset[0];
+  if (!semester) {
+    const err: HttpError = new Error("Không tìm thấy Kỳ học thuộc đúng Lớp này");
+    err.status = 400;
+    throw err;
+  }
+  const teachingEnd = semester.TeachingEndDate || semester.EndDate;
+  const weeks = getWeeksInSemester(semester.StartDate, teachingEnd);
+
+  const weeklyStats: FullTermWeekStat[] = [];
+  const autoScheduleRunIds: string[] = [];
+  for (let weekNumber = 1; weekNumber <= weeks.length; weekNumber++) {
+    const report = await runAutoSchedule(classId, semesterId, weekNumber, userId);
+    weeklyStats.push({ weekNumber, totalPeriodsScheduled: report.totalPeriodsScheduled, autoScheduleRunId: report.autoScheduleRunId });
+    autoScheduleRunIds.push(report.autoScheduleRunId);
+  }
+
+  const rescue = await runFullTermRescuePass(classId, semesterId, userId, semester.StartDate, teachingEnd);
+  autoScheduleRunIds.push(rescue.autoScheduleRunId);
+
+  return {
+    autoScheduleRunIds,
+    totalPeriodsNeeded: rescue.totalPeriodsNeeded,
+    totalPeriodsScheduled: rescue.totalPeriodsScheduled,
+    subjectResults: rescue.subjectResults,
+    weeklyStats,
+    rescuePeriodsScheduled: rescue.rescuePeriodsScheduled,
+  };
 }

@@ -11,6 +11,9 @@ router.get("/period-progress", authenticate, ctrl.periodProgressByClass);
 // thành :id.
 router.post("/auto-generate", authenticate, requireRole("Admin"), autoCtrl.generate);
 router.delete("/auto-generate/:runId", authenticate, requireRole("Admin"), autoCtrl.cancel);
+// Việc CO: xếp CẢ KỲ trong 1 lần gọi (lặp hết mọi Tuần + bước cứu vãn cuối Kỳ) — literal riêng, không
+// đụng "/auto-generate/:runId" (khác hình dạng path, không có dấu "/" sau "auto-generate-full-term").
+router.post("/auto-generate-full-term", authenticate, requireRole("Admin"), autoCtrl.generateFullTerm);
 router.delete("/week", authenticate, requireRole("Admin"), ctrl.deleteWeek);
 router.delete("/semester", authenticate, requireRole("Admin"), ctrl.deleteSemester);
 router.get("/:id", authenticate, ctrl.getById);

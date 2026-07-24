@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import axiosClient from "../../api/axiosClient";
 import { useAuth } from "../../context/AuthContext";
-import { ScheduleItem, ScheduleDetail, SchedulePeriodProgress, Semester, SchoolClass, Subject, Room, Teacher, Session, SchedulingPolicyItem, ApiErrorResponse, CopyWeekResult, CurriculumItem, Cohort, AutoScheduleReport, ExamItem, ExamDetail, ExamType, AutoExamScheduleReport } from "../../types";
+import { ScheduleItem, ScheduleDetail, SchedulePeriodProgress, Semester, SchoolClass, Subject, Room, Teacher, Session, SchedulingPolicyItem, ApiErrorResponse, CopyWeekResult, CurriculumItem, Cohort, AutoScheduleReport, FullTermAutoScheduleReport, ExamItem, ExamDetail, ExamType, AutoExamScheduleReport } from "../../types";
 import { AxiosError } from "axios";
 import { addDays, addMinutesToTime, colorForId, diffMinutesBetweenTimes, findTodayWeekIndex, getISOWeek, getISOWeekYear, getWeeksInSemester, mondayOfISOWeek, parseDateKey, startOfWeek, toDateKey, WEEKDAY_LABELS } from "../../../utils/calendar";
 import { buildWorkbook, downloadWorkbook } from "../../../utils/excel";
@@ -399,6 +399,12 @@ export default function ScheduleGrid() {
   const [autoScheduling, setAutoScheduling] = useState(false);
   const [autoScheduleReport, setAutoScheduleReport] = useState<AutoScheduleReport | null>(null);
   const [autoScheduleError, setAutoScheduleError] = useState("");
+
+  // Việc CO: Tự động xếp CẢ KỲ (lặp hết mọi Tuần + bước cứu vãn cuối Kỳ, Việc CN) trong 1 lần bấm —
+  // riêng biệt với nút xếp từng tuần ở trên, vẫn giữ nguyên nút cũ để kiểm soát chi tiết khi cần.
+  const [autoSchedulingFullTerm, setAutoSchedulingFullTerm] = useState(false);
+  const [autoScheduleFullTermReport, setAutoScheduleFullTermReport] = useState<FullTermAutoScheduleReport | null>(null);
+  const [autoScheduleFullTermError, setAutoScheduleFullTermError] = useState("");
 
   // Việc CC: Tự động xếp Lịch thi (1 Lớp + 1 Kỳ đang chọn ở bộ lọc trên cùng) — riêng biệt với tự
   // động xếp TKB ở trên, chạy 1 lần cho TOÀN BỘ vùng thi của Kỳ (không theo từng Tuần).
@@ -1266,6 +1272,31 @@ export default function ScheduleGrid() {
     loadSchedule();
   }
 
+  // Việc CO: Tự động xếp CẢ KỲ trong 1 lần bấm — lặp nội bộ qua hết mọi Tuần rồi tự động chạy bước
+  // cứu vãn cuối Kỳ (Việc CN), có thể mất nhiều thời gian hơn hẳn xếp từng tuần nên cảnh báo rõ trước.
+  async function handleAutoScheduleFullTerm() {
+    if (!filters.classId || !filters.semesterId) return;
+    if (!confirm(
+      "Tự động xếp lịch cho TOÀN BỘ Kỳ đang chọn (lặp qua hết mọi Tuần rồi tự động rà soát bổ sung phần " +
+      "còn thiếu)? Thao tác này xử lý nhiều tuần cùng lúc nên có thể mất nhiều thời gian hơn xếp từng tuần."
+    )) return;
+    setAutoScheduleFullTermError("");
+    setAutoScheduleFullTermReport(null);
+    setAutoSchedulingFullTerm(true);
+    try {
+      const res = await axiosClient.post<FullTermAutoScheduleReport>("/schedule/auto-generate-full-term", {
+        classId: Number(filters.classId), semesterId: Number(filters.semesterId),
+      });
+      setAutoScheduleFullTermReport(res.data);
+      loadSchedule();
+    } catch (err) {
+      const axiosErr = err as AxiosError<ApiErrorResponse>;
+      setAutoScheduleFullTermError(axiosErr.response?.data?.message || "Có lỗi xảy ra khi tự động xếp lịch cả Kỳ");
+    } finally {
+      setAutoSchedulingFullTerm(false);
+    }
+  }
+
   // Việc CC: Tự động xếp Lịch thi cho TOÀN BỘ vùng thi của Lớp + Kỳ đang chọn (không theo Tuần).
   async function handleAutoScheduleExams() {
     if (!filters.classId || !filters.semesterId) return;
@@ -1963,6 +1994,11 @@ export default function ScheduleGrid() {
             {autoScheduling ? "Đang tự động xếp..." : "🤖 Tự động xếp lịch tuần này"}
           </button>
         )}
+        {isAdmin && selectedSemester && (
+          <button type="button" disabled={autoSchedulingFullTerm} onClick={handleAutoScheduleFullTerm}>
+            {autoSchedulingFullTerm ? "Đang tự động xếp cả Kỳ... (có thể mất vài phút)" : "🤖📅 Tự động xếp CẢ KỲ"}
+          </button>
+        )}
         {isAdmin && currentWeek && (
           <button type="button" className="btn-danger" disabled={deletingWeek} onClick={handleDeleteWeek}>
             {deletingWeek ? "Đang xóa..." : "🗑 Xóa lịch tuần này"}
@@ -2013,6 +2049,56 @@ export default function ScheduleGrid() {
           <div className="flex gap-2 mt-1">
             <button type="button" onClick={() => setAutoScheduleReport(null)}>Đóng</button>
             <button type="button" onClick={handleCancelAutoSchedule}>Hủy toàn bộ lần xếp này</button>
+          </div>
+        </div>
+      )}
+
+      {isAdmin && autoScheduleFullTermError && <div className="error-text">{autoScheduleFullTermError}</div>}
+
+      {isAdmin && autoScheduleFullTermReport && (
+        <div className="inline-form items-start flex-col">
+          <p className="hint">
+            Đã xếp tự động cho CẢ KỲ: tổng {autoScheduleFullTermReport.totalPeriodsScheduled}/{autoScheduleFullTermReport.totalPeriodsNeeded} tiết
+            (trong đó bước rà soát bổ sung cuối Kỳ xếp thêm {autoScheduleFullTermReport.rescuePeriodsScheduled} tiết mà vòng lặp
+            theo từng tuần đã bỏ sót). Môn còn thiếu tiết dưới đây là thiếu THẬT SỰ — đã quét hết mọi (Ngày, Ca) khả dụng trong
+            cả Kỳ, không còn slot nào khác để xếp thêm.
+          </p>
+          <table className="data-table">
+            <thead>
+              <tr><th>Môn học</th><th>Đã xếp / Tổng cần cả Kỳ</th><th>Trạng thái</th></tr>
+            </thead>
+            <tbody>
+              {autoScheduleFullTermReport.subjectResults.map((r) => (
+                <tr key={r.subjectId} className={r.failureReason ? "row-danger" : ""}>
+                  <td>{r.subjectName}</td>
+                  <td>{r.periodsScheduled}/{r.periodsNeeded} tiết</td>
+                  <td>
+                    {r.isComplete
+                      ? <span className="text-green-600 text-[13px]">✓ Đã xếp xong cả môn</span>
+                      : <span className="error-text mt-0">{r.failureReason}</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <details className="mt-1">
+            <summary className="hint" style={{ cursor: "pointer" }}>Xem mật độ xếp theo từng tuần</summary>
+            <table className="data-table mt-1">
+              <thead>
+                <tr><th>Tuần</th><th>Số tiết xếp thêm trong tuần</th></tr>
+              </thead>
+              <tbody>
+                {autoScheduleFullTermReport.weeklyStats.map((w) => (
+                  <tr key={w.weekNumber}>
+                    <td>Tuần {w.weekNumber}</td>
+                    <td>{w.totalPeriodsScheduled} tiết</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
+          <div className="flex gap-2 mt-1">
+            <button type="button" onClick={() => setAutoScheduleFullTermReport(null)}>Đóng</button>
           </div>
         </div>
       )}

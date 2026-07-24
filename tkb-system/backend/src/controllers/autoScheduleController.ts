@@ -1,6 +1,6 @@
 import { Response, NextFunction } from "express";
 import { AuthRequest } from "../types";
-import { runAutoSchedule, cancelAutoScheduleRun } from "../utils/autoScheduler";
+import { runAutoSchedule, cancelAutoScheduleRun, runAutoScheduleFullTerm } from "../utils/autoScheduler";
 
 interface AutoGenerateBody {
   classId?: number;
@@ -19,6 +19,27 @@ export async function generate(req: AuthRequest, res: Response, next: NextFuncti
       return;
     }
     const report = await runAutoSchedule(classId, semesterId, weekNumber, req.user!.userId);
+    res.status(201).json(report);
+  } catch (err) {
+    next(err);
+  }
+}
+
+interface AutoGenerateFullTermBody {
+  classId?: number;
+  semesterId?: number;
+}
+
+// Việc CO: chạy thuật toán tự động xếp TKB cho CẢ KỲ (lặp hết mọi Tuần + tự động chạy bước cứu vãn
+// cuối Kỳ, Việc CN) trong 1 lần gọi duy nhất — toàn bộ logic nằm ở autoScheduler.ts.
+export async function generateFullTerm(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const { classId, semesterId } = req.body as AutoGenerateFullTermBody;
+    if (!classId || !semesterId) {
+      res.status(400).json({ message: "Thiếu classId hoặc semesterId" });
+      return;
+    }
+    const report = await runAutoScheduleFullTerm(classId, semesterId, req.user!.userId);
     res.status(201).json(report);
   } catch (err) {
     next(err);

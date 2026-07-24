@@ -331,6 +331,22 @@ export interface AutoScheduleReport {
   subjectResults: AutoScheduleSubjectResult[];
 }
 
+// Tự động xếp CẢ KỲ (lặp hết mọi Tuần + bước cứu vãn cuối Kỳ) — kết quả trả về sau khi gọi
+// POST /schedule/auto-generate-full-term.
+export interface FullTermWeekStat {
+  weekNumber: number;
+  totalPeriodsScheduled: number;
+  autoScheduleRunId: string;
+}
+export interface FullTermAutoScheduleReport {
+  autoScheduleRunIds: string[];
+  totalPeriodsNeeded: number;
+  totalPeriodsScheduled: number;
+  subjectResults: AutoScheduleSubjectResult[];
+  weeklyStats: FullTermWeekStat[];
+  rescuePeriodsScheduled: number;
+}
+
 export interface AutoExamScheduleSubjectResult {
   subjectId: number;
   subjectName: string;
