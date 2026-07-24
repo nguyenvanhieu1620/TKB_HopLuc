@@ -213,16 +213,19 @@ interface DateSessionSlot { date: string; session: SessionRow; }
 
 // Việc CD: thứ tự ưu tiên ĐẦY ĐỦ khi sinh danh sách (Ngày, Ca) khả dụng trong tuần cho Lớp kiểu Liên
 // thông — THAY THẾ HOÀN TOÀN mọi bản thứ tự ưu tiên đã gửi trước đây (Việc BN, BO, BQ), dùng bản này
-// làm chuẩn CUỐI CÙNG. Từ ưu tiên cao xuống thấp (7 mức, MỖI mức lấp đầy hết mới sang mức kế tiếp):
+// làm chuẩn CUỐI CÙNG. Từ ưu tiên cao xuống thấp (6 mức, MỖI mức lấp đầy hết mới sang mức kế tiếp):
 //   1. Thứ 7 Sáng, Thứ 7 Chiều, Chủ nhật Sáng, Chủ nhật Chiều
 //   2. Tối Thứ 6
 //   3. Tối Thứ 5
-//   4. Tối Thứ 7
-//   5. Tối Thứ 4
-//   6. Tối Thứ 3
-//   7. Tối Thứ 2
-// Tối Chủ nhật KHÔNG BAO GIỜ đưa vào danh sách. Thứ 2-6 Sáng/Chiều cũng không đưa vào — chưa từng hợp
-// lệ với hệ Liên thông theo checkTrainingModeRule, đưa vào chỉ tốn vòng lặp thử vô ích.
+//   4. Tối Thứ 4
+//   5. Tối Thứ 3
+//   6. Tối Thứ 2
+// Tối Chủ nhật KHÔNG BAO GIỜ đưa vào danh sách. Tối Thứ 7 (Việc CL) cũng KHÔNG BAO GIỜ đưa vào danh
+// sách nữa — CHỈ ảnh hưởng thuật toán tự động xếp (danh sách slot ưu tiên ở đây), KHÔNG đổi
+// checkTrainingModeRule (xếp tay vẫn cho phép Tối Thứ 7 như trước, chỉ cảnh báo như thường lệ, giống
+// hệt cách Tối Chủ nhật vẫn xếp tay được dù thuật toán tự động không bao giờ chọn). Thứ 2-6 Sáng/Chiều
+// cũng không đưa vào — chưa từng hợp lệ với hệ Liên thông theo checkTrainingModeRule, đưa vào chỉ tốn
+// vòng lặp thử vô ích.
 // weekday: 0=CN,1=T2,2=T3,3=T4,4=T5,5=T6,6=T7 (cùng quy ước getWeekday).
 //
 // Việc CE (fix): chẩn đoán qua script riêng (Lớp Dược K16A1, Kỳ 3) phát hiện Thứ 7/CN của LỚP LIÊN
@@ -251,11 +254,10 @@ function buildLTPrioritySlots(dates: string[], availableSessions: SessionRow[], 
   const eveningTiers = [
     ...slotsForWeekdays([5], toiSessions), // Tối T6
     ...slotsForWeekdays([4], toiSessions), // Tối T5
-    ...slotsForWeekdays([6], toiSessions), // Tối T7
     ...slotsForWeekdays([3], toiSessions), // Tối T4
     ...slotsForWeekdays([2], toiSessions), // Tối T3
     ...slotsForWeekdays([1], toiSessions), // Tối T2
-    // Tối CN (weekday 0, toiSessions) cố tình KHÔNG đưa vào.
+    // Tối CN (weekday 0) và Tối T7 (weekday 6, Việc CL) cố tình KHÔNG đưa vào.
   ];
 
   return preferToiFirst ? [...eveningTiers, ...weekendTier] : [...weekendTier, ...eveningTiers];
@@ -265,7 +267,7 @@ function buildLTPrioritySlots(dates: string[], availableSessions: SessionRow[], 
 // tự ưu tiên cần thử trước — vấn đề 1: Lâm sàng, và (Việc BV) block chỉ dùng phòng Sân bãi, KHÔNG được
 // xếp Ca Tối (loại khỏi danh sách TRƯỚC khi tính slot, độc lập/chặt hơn checkTrainingModeRule — CQ/LT
 // thường vẫn xếp Tối được nếu hợp lệ, riêng 2 trường hợp này thì không, bất kể hệ đào tạo); vấn đề 2:
-// Lớp kiểu Liên thông theo đúng 7 mức ưu tiên của buildLTPrioritySlots ở trên (Việc CD), ĐẢO NGƯỢC khi
+// Lớp kiểu Liên thông theo đúng 6 mức ưu tiên của buildLTPrioritySlots ở trên (Việc CD, Việc CL), ĐẢO NGƯỢC khi
 // isClinical=false VÀ ctx.preferToiForFlexible=true (Việc CE fix, xem giải thích ở buildLTPrioritySlots)
 // — chỉ cần đổi thứ tự DANH SÁCH, tryPlaceSingleBlock vẫn duyệt tuần tự như cũ nên không cần đổi logic
 // thử-xếp bên dưới.
@@ -650,8 +652,11 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
   const nonToiSessionCount = sessionsForRatio.filter((s) => classifyPeriod(s.StartTime) !== "Toi").length;
   const toiSessionCount = sessionsForRatio.filter((s) => classifyPeriod(s.StartTime) === "Toi").length;
   const effectiveTrainingModeForRatio = classInfo?.trainingMode ?? null;
+  // Việc CL: Tối Thứ 7 không còn được thuật toán xếp (buildLTPrioritySlots), chỉ còn 5 buổi Tối khả
+  // dụng thật (T2-T6) thay vì 6 — hệ số ở đây phải khớp để mẫu số không bị tính thừa 1 buổi Tối/tuần
+  // không bao giờ dùng tới, lặp lại đúng nguyên tắc đã sửa ở Việc CK.
   const normalWeekSlotUnits = effectiveTrainingModeForRatio === "LT"
-    ? nonToiSessionCount * 2 + toiSessionCount * 6
+    ? nonToiSessionCount * 2 + toiSessionCount * 5
     : nonToiSessionCount * 5;
 
   const remainingWeeksList = weeks.slice(weekNumber - 1);
@@ -682,7 +687,7 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
       const wd = getWeekday(d);
       if (effectiveTrainingModeForRatio === "LT") {
         if (wd === 6 || wd === 0) totalActualSlotUnits += nonToiSessionCount;
-        if (wd >= 1 && wd <= 6) totalActualSlotUnits += toiSessionCount;
+        if (wd >= 1 && wd <= 5) totalActualSlotUnits += toiSessionCount;
       } else if (wd >= 1 && wd <= 5) {
         totalActualSlotUnits += nonToiSessionCount;
       }
