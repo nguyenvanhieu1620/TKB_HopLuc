@@ -623,7 +623,6 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
     throw err;
   }
   const targetWeek = weeks[weekNumber - 1];
-  const weeksRemaining = weeks.length - weekNumber + 1;
 
   const classInfo = await getClassTrainingMode(classId);
   // Việc CA: hệ GỐC của Ngành (KHÔNG qua SchedulePatternOverride) — CHỈ dùng cho findHoliday, tách
@@ -635,6 +634,63 @@ export async function runAutoSchedule(classId: number, semesterId: number, weekN
     FROM Sessions WHERE IsActive = 1 ORDER BY SortOrder
   `);
   const roomsResult = await pool.request().query<RoomRow>(`SELECT RoomId, RoomType FROM Rooms WHERE IsActive = 1`);
+
+  // Việc CK (fix): weeksRemaining TRƯỚC ĐÂY tính THÔ theo lịch (weeks.length - weekNumber + 1), KHÔNG
+  // trừ các tuần/phần tuần rơi vào Holidays — khiến mẫu số của quotaThisWeek (Việc BK) VÀ weekTotalCap
+  // (Việc CH) bị TÍNH THỪA (đếm cả những ngày không thể dạy được), làm cả 2 giá trị đó THẤP HƠN mức cần
+  // thiết SUỐT CẢ KỲ (không chỉ riêng đầu Kỳ) — mỗi tuần bị kìm nhẹ hơn đúng mức cần, cộng dồn dần
+  // thành thiếu hụt rõ rệt ở cuối Kỳ dù đầu Kỳ vẫn còn slot Tối bỏ trống. SỬA: quy đổi ra "số tuần dạy
+  // THỰC TẾ còn lại" — tổng số slot (Ngày, Ca) khả dụng THẬT (đã trừ Holidays đúng Hệ đào tạo GỐC, cùng
+  // chuẩn findHoliday) trên MỌI tuần còn lại (kể cả tuần đang chạy), chia cho số slot của 1 tuần KHÔNG
+  // nghỉ lễ — tuần nghỉ TOÀN BỘ đóng góp 0, tuần nghỉ MỘT PHẦN đóng góp đúng phần còn lại. Hệ số
+  // slot/ngày (nonToiCount/toiCount) tự triệt tiêu trong tỷ lệ (tử số và mẫu số cùng nhân hệ số đó) nên
+  // không cần khớp tuyệt đối logic đặt lịch thật (vd ràng buộc "1 buổi/ngày" của hệ CQ) — chỉ cần TỶ LỆ
+  // ngày khả dụng thật/ngày khả dụng chuẩn là đủ chính xác cho mục đích chia đều tiến độ.
+  const sessionsForRatio = sessionsResult.recordset;
+  const nonToiSessionCount = sessionsForRatio.filter((s) => classifyPeriod(s.StartTime) !== "Toi").length;
+  const toiSessionCount = sessionsForRatio.filter((s) => classifyPeriod(s.StartTime) === "Toi").length;
+  const effectiveTrainingModeForRatio = classInfo?.trainingMode ?? null;
+  const normalWeekSlotUnits = effectiveTrainingModeForRatio === "LT"
+    ? nonToiSessionCount * 2 + toiSessionCount * 6
+    : nonToiSessionCount * 5;
+
+  const remainingWeeksList = weeks.slice(weekNumber - 1);
+  const holidayScanStart = remainingWeeksList[0].start < semester.StartDate ? semester.StartDate : remainingWeeksList[0].start;
+  const holidaysInRangeResult = await pool
+    .request()
+    .input("scanStart", sql.Date, holidayScanStart)
+    .input("scanEnd", sql.Date, teachingEnd)
+    .query<{ DateFrom: string; DateTo: string; AppliesTo: string }>(`
+      SELECT CONVERT(VARCHAR(10), DateFrom, 23) AS DateFrom, CONVERT(VARCHAR(10), DateTo, 23) AS DateTo, AppliesTo
+      FROM Holidays WHERE DateTo >= @scanStart AND DateFrom <= @scanEnd
+    `);
+  const majorTrainingModeForHoliday = majorClassInfo?.trainingMode ?? null;
+  function isHolidayDateForRatio(date: string): boolean {
+    return holidaysInRangeResult.recordset.some((h) =>
+      date >= h.DateFrom && date <= h.DateTo
+      && (h.AppliesTo === "ALL" || (majorTrainingModeForHoliday !== null && h.AppliesTo === majorTrainingModeForHoliday))
+    );
+  }
+
+  let totalActualSlotUnits = 0;
+  for (const w of remainingWeeksList) {
+    const wRangeStart = w.start < semester.StartDate ? semester.StartDate : w.start;
+    const wRangeEnd = w.end > teachingEnd ? teachingEnd : w.end;
+    if (wRangeStart > wRangeEnd) continue;
+    for (let d = wRangeStart; d <= wRangeEnd; d = shiftDateStr(d, 1)) {
+      if (isHolidayDateForRatio(d)) continue;
+      const wd = getWeekday(d);
+      if (effectiveTrainingModeForRatio === "LT") {
+        if (wd === 6 || wd === 0) totalActualSlotUnits += nonToiSessionCount;
+        if (wd >= 1 && wd <= 6) totalActualSlotUnits += toiSessionCount;
+      } else if (wd >= 1 && wd <= 5) {
+        totalActualSlotUnits += nonToiSessionCount;
+      }
+    }
+  }
+  const weeksRemaining = totalActualSlotUnits > 0 && normalWeekSlotUnits > 0
+    ? totalActualSlotUnits / normalWeekSlotUnits
+    : Math.max(weeks.length - weekNumber + 1, 1);
 
   // Môn cần học: CurriculumItems theo (MajorId, TermNumber), ưu tiên dòng khớp CohortId — cùng
   // pattern ROW_NUMBER đã dùng ở curriculumItemController.list().
